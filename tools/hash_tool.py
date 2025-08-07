@@ -3,6 +3,7 @@ import hashlib, csv
 from pathlib import Path
 from typing import List
 
+import tkinter as tk
 import ttkbootstrap as tb
 from ttkbootstrap.dialogs import Messagebox
 
@@ -30,7 +31,7 @@ class HashTool:
         tb.Checkbutton(top, text="Recursive", variable=self.recursive_var).pack(side="left", padx=6)
         tb.Button(top, text="Run", command=self._run, bootstyle="success").pack(side="right", padx=4)
 
-        self.listbox = tb.Listbox(frm, height=15)
+        self.listbox = tk.Listbox(frm, height=15)
         self.listbox.pack(fill="both", expand=True, padx=8, pady=8)
 
         self.panel = frm
