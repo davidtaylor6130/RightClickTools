@@ -1,0 +1,11 @@
+Windows Registry Editor Version 5.00
+
+[HKEY_CLASSES_ROOT\*\shell\RCT-Clean]
+@="Clean with RCT"
+[HKEY_CLASSES_ROOT\*\shell\RCT-Clean\command]
+@="\"C:\\Path\\To\\RightClickToolkit.exe\" --action clean --target \"%1\""
+
+[HKEY_CLASSES_ROOT\*\shell\RCT-Hash]
+@="Hash with RCT"
+[HKEY_CLASSES_ROOT\*\shell\RCT-Hash\command]
+@="\"C:\\Path\\To\\RightClickToolkit.exe\" --action hash --target \"%1\""

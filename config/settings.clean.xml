@@ -1,0 +1,14 @@
+<CleanerConfig>
+    <DryRun>true</DryRun>
+    <MoveToRecycleBin>true</MoveToRecycleBin>
+    <Rules>
+        <Rule name="Temp Files" path="C:\Temp">
+            <Include pattern="*.tmp;*.log"/>
+            <Exclude pattern="keepme.log"/>
+            <Recursive>true</Recursive>
+            <DeleteEmptyDirs>true</DeleteEmptyDirs>
+            <MaxAge days="7"/>
+            <Enabled>true</Enabled>
+        </Rule>
+    </Rules>
+</CleanerConfig>
