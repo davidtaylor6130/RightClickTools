@@ -6,11 +6,39 @@ from pathlib import Path
 from typing import List, Optional
 
 # GUI
-import tkinter as tk
-from tkinter.scrolledtext import ScrolledText  # avoids ttk style issues on some macOS Tk builds
+# ``ttkbootstrap`` is optional so that the plugin can be discovered even when
+# the GUI dependencies are missing (such as in a headless test environment).
+try:
+    import tkinter as tk
+    from tkinter.scrolledtext import ScrolledText  # avoids ttk style issues on some macOS Tk builds
+    import ttkbootstrap as tb
+    from ttkbootstrap.dialogs import Messagebox
+    GUI_AVAILABLE = True
+except Exception:  # pragma: no cover - best effort fallback
+    tk = None  # type: ignore[assignment]
+    ScrolledText = None  # type: ignore[assignment]
+    tb = None  # type: ignore[assignment]
 
-import ttkbootstrap as tb
-from ttkbootstrap.dialogs import Messagebox
+    class Messagebox:  # type: ignore[override]
+        """Minimal stub used when ``ttkbootstrap`` is unavailable."""
+
+        @staticmethod
+        def show_error(message: str, title: str | None = None) -> None:
+            print(message)
+
+        @staticmethod
+        def show_warning(message: str, title: str | None = None) -> None:
+            print(message)
+
+        @staticmethod
+        def show_info(message: str, title: str | None = None) -> None:
+            print(message)
+
+        @staticmethod
+        def okcancel(message: str, title: str | None = None) -> bool:
+            return False
+
+    GUI_AVAILABLE = False
 
 # Optional trash support
 try:
@@ -150,6 +178,9 @@ class CleanTool:
 
     # ---- UI ----
     def make_panel(self, master, context: AppContext):
+        if not GUI_AVAILABLE:
+            raise RuntimeError("GUI dependencies (tkinter/ttkbootstrap) are not installed")
+
         frm = tb.LabelFrame(master, text=self.title)  # correct casing
         # Tk variables (ttkbootstrap doesn't export *Var reliably across versions)
         self.xml_path_var = tk.StringVar(value=str((context.resource_dir / "configs" / "settings.clean.xml")))

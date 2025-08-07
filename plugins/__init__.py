@@ -24,9 +24,18 @@ def discover_plugins(base_dir: Path) -> Dict[str, object]:
     tools_dir = (base_dir / "tools").resolve()
     results: Dict[str, object] = {}
     for py in sorted(tools_dir.glob("*_tool.py")):
-        spec = spec_from_file_location(py.stem, py)
+        # Give the module a fully qualified name inside the ``tools`` package
+        # so that libraries such as :mod:`dataclasses` can resolve the module
+        # via ``sys.modules`` during class decoration.
+        module_name = f"{py.parent.name}.{py.stem}"
+        spec = spec_from_file_location(module_name, py)
         if spec and spec.loader:
             module = module_from_spec(spec)
+            # Register the module before execution to satisfy dataclasses and
+            # other modules that expect it in ``sys.modules``.
+            import sys
+
+            sys.modules[module_name] = module
             try:
                 spec.loader.exec_module(module)  # type: ignore[union-attr]
             except Exception:
