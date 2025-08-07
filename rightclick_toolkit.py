@@ -4,21 +4,8 @@ from pathlib import Path
 from typing import List, Dict, Optional
 import platform
 import tkinter as tk  # for StringVar, etc.
+from tkinter import ttk, messagebox
 from tkinter.scrolledtext import ScrolledText as TkScrolledText  # use Tk's ScrolledText to avoid ttk style issues
-
-# GUI
-try:
-    import ttkbootstrap as tb
-    from ttkbootstrap.dialogs import Messagebox
-    # macOS/Tk PNG icon quirk workaround: swap to a tiny GIF if needed
-    try:
-        import ttkbootstrap.window as tb_window
-        tb_window.Icon.icon = ("R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw==")  # 1x1 GIF (base64)
-    except Exception:
-        pass
-except ImportError:
-    print("Install deps: pip install ttkbootstrap send2trash pyinstaller")
-    sys.exit(1)
 
 from plugins.base import AppContext
 from plugins import discover_plugins
@@ -51,7 +38,7 @@ def parse_cli(argv: List[str]):
 
 
 # ----------------- Tool Host Window -----------------
-class ToolHostWindow(tb.Toplevel):
+class ToolHostWindow(tk.Toplevel):
     """Hosts a single tool's GUI panel in its own window and runs its lifecycle."""
 
     def __init__(self, master, plugin, ctx: AppContext, targets: List[Path], extra: List[str]):
@@ -65,7 +52,7 @@ class ToolHostWindow(tb.Toplevel):
         self.geometry("1000x700")
         self.resizable(True, True)
 
-        container = tb.Frame(self, padding=8)
+        container = ttk.Frame(self, padding=8)
         container.pack(fill="both", expand=True)
 
         # Build the tool's panel
@@ -83,7 +70,7 @@ class ToolHostWindow(tb.Toplevel):
         try:
             self.plugin.start(self.ctx, self.targets, self.extra)
         except Exception as e:
-            Messagebox.show_error(message=str(e), title="Tool start error")
+            messagebox.showerror(title="Tool start error", message=str(e))
 
     def _on_close(self):
         try:
@@ -94,10 +81,11 @@ class ToolHostWindow(tb.Toplevel):
 
 
 # ----------------- Main Window (Launcher) -----------------
-class MainWindow(tb.Window):
+class MainWindow(tk.Tk):
     def __init__(self, plugins: Dict[str, object], default_action: Optional[str],
                  targets: List[Path], extra: List[str]):
-        super().__init__(title=f"{APP_NAME} {VERSION}", themename="darkly")
+        super().__init__()
+        self.title(f"{APP_NAME} {VERSION}")
         self.geometry("1100x760")
         self.resizable(True, True)
 
@@ -116,28 +104,28 @@ class MainWindow(tb.Window):
         )
 
         # ---- Top bar (branding + actions) ----
-        top = tb.Frame(self, padding=10)
+        top = ttk.Frame(self, padding=10)
         top.pack(fill="x")
-        tb.Label(top, text=f"{APP_NAME}", font="-size 16 -weight bold").pack(side="left")
-        tb.Label(top, text=f"v{VERSION}", bootstyle="secondary").pack(side="left", padx=(8, 0))
-        tb.Button(top, text="Refresh", command=self._refresh_tools, bootstyle="secondary").pack(side="right", padx=6)
-        tb.Button(top, text="About", command=self._about, bootstyle="info").pack(side="right")
+        ttk.Label(top, text=f"{APP_NAME}", font="-size 16 -weight bold").pack(side="left")
+        ttk.Label(top, text=f"v{VERSION}", foreground="gray").pack(side="left", padx=(8, 0))
+        ttk.Button(top, text="Refresh", command=self._refresh_tools).pack(side="right", padx=6)
+        ttk.Button(top, text="About", command=self._about).pack(side="right")
 
         # ---- Main split: left list (tools), right details/targets ----
-        main_split = tb.Panedwindow(self, orient="horizontal")
+        main_split = ttk.Panedwindow(self, orient="horizontal")
         main_split.pack(fill="both", expand=True, padx=10, pady=(0, 10))
 
         # Left: Tools list + search
-        left = tb.LabelFrame(main_split, text="Available Tools", padding=8)
-        search_row = tb.Frame(left)
+        left = ttk.LabelFrame(main_split, text="Available Tools", padding=8)
+        search_row = ttk.Frame(left)
         search_row.pack(fill="x", pady=(0, 6))
-        tb.Label(search_row, text="Search:").pack(side="left")
+        ttk.Label(search_row, text="Search:").pack(side="left")
         self.search_var = tk.StringVar()
-        search_entry = tb.Entry(search_row, textvariable=self.search_var)
+        search_entry = ttk.Entry(search_row, textvariable=self.search_var)
         search_entry.pack(side="left", fill="x", expand=True, padx=6)
         search_entry.bind("<KeyRelease>", lambda e: self._filter_tools())
 
-        self.tools_tv = tb.Treeview(left, columns=("title", "desc"), show="headings", height=20)
+        self.tools_tv = ttk.Treeview(left, columns=("title", "desc"), show="headings", height=20)
         self.tools_tv.heading("title", text="Tool")
         self.tools_tv.heading("desc", text="Description")
         self.tools_tv.column("title", width=220, anchor="w")
@@ -148,7 +136,7 @@ class MainWindow(tb.Window):
         main_split.add(left, weight=1)
 
         # Right: details + targets + actions
-        right = tb.LabelFrame(main_split, text="Details & Launch", padding=8)
+        right = ttk.LabelFrame(main_split, text="Details & Launch", padding=8)
         main_split.add(right, weight=2)
 
         # Selected tool info
@@ -156,41 +144,41 @@ class MainWindow(tb.Window):
         self.sel_title_var = tk.StringVar(value="")
         self.sel_desc_var = tk.StringVar(value="")
 
-        info_grid = tb.Frame(right)
+        info_grid = ttk.Frame(right)
         info_grid.pack(fill="x")
-        tb.Label(info_grid, text="Key:", bootstyle="secondary").grid(row=0, column=0, sticky="w")
-        tb.Label(info_grid, textvariable=self.sel_key_var).grid(row=0, column=1, sticky="w", padx=6)
-        tb.Label(info_grid, text="Title:", bootstyle="secondary").grid(row=1, column=0, sticky="w")
-        tb.Label(info_grid, textvariable=self.sel_title_var).grid(row=1, column=1, sticky="w", padx=6)
+        ttk.Label(info_grid, text="Key:").grid(row=0, column=0, sticky="w")
+        ttk.Label(info_grid, textvariable=self.sel_key_var).grid(row=0, column=1, sticky="w", padx=6)
+        ttk.Label(info_grid, text="Title:").grid(row=1, column=0, sticky="w")
+        ttk.Label(info_grid, textvariable=self.sel_title_var).grid(row=1, column=1, sticky="w", padx=6)
 
-        tb.Label(right, text="Description:", bootstyle="secondary").pack(anchor="w", pady=(8, 0))
+        ttk.Label(right, text="Description:").pack(anchor="w", pady=(8, 0))
         # Use Tk's ScrolledText to avoid ttk 'style' option error on older Tk builds (macOS)
         self.desc_text = TkScrolledText(right, height=8, wrap="word")
         self.desc_text.pack(fill="both", expand=False, pady=(2, 8))
 
         # Targets manager (Treeview list, themed)
-        targets_frame = tb.LabelFrame(right, text="Targets (optional)", padding=8)
+        targets_frame = ttk.LabelFrame(right, text="Targets (optional)", padding=8)
         targets_frame.pack(fill="both", expand=True, pady=(6, 8))
 
-        self.targets_tv = tb.Treeview(targets_frame, columns=("path",), show="headings", height=10)
+        self.targets_tv = ttk.Treeview(targets_frame, columns=("path",), show="headings", height=10)
         self.targets_tv.heading("path", text="Path")
         self.targets_tv.column("path", anchor="w", stretch=True, width=500)
         self.targets_tv.pack(fill="both", expand=True)
 
-        tbar = tb.Frame(targets_frame)
+        tbar = ttk.Frame(targets_frame)
         tbar.pack(fill="x", pady=(6, 0))
-        tb.Button(tbar, text="Add File(s)", command=self._add_files, bootstyle="secondary").pack(side="left", padx=4)
-        tb.Button(tbar, text="Add Folder", command=self._add_folder, bootstyle="secondary").pack(side="left", padx=4)
-        tb.Button(tbar, text="Remove Selected", command=self._remove_selected, bootstyle="warning").pack(side="left", padx=4)
-        tb.Button(tbar, text="Clear", command=self._clear_targets, bootstyle="danger").pack(side="left", padx=4)
+        ttk.Button(tbar, text="Add File(s)", command=self._add_files).pack(side="left", padx=4)
+        ttk.Button(tbar, text="Add Folder", command=self._add_folder).pack(side="left", padx=4)
+        ttk.Button(tbar, text="Remove Selected", command=self._remove_selected).pack(side="left", padx=4)
+        ttk.Button(tbar, text="Clear", command=self._clear_targets).pack(side="left", padx=4)
 
         # Launch buttons
-        actions = tb.Frame(right)
+        actions = ttk.Frame(right)
         actions.pack(fill="x", pady=(8, 0))
-        tb.Button(actions, text="Open Tool Window", command=self._open_selected_tool, bootstyle="success").pack(
+        ttk.Button(actions, text="Open Tool Window", command=self._open_selected_tool).pack(
             side="left", padx=6
         )
-        tb.Button(actions, text="Focus If Open", command=self._focus_selected_tool, bootstyle="secondary").pack(
+        ttk.Button(actions, text="Focus If Open", command=self._focus_selected_tool).pack(
             side="left", padx=6
         )
 
@@ -206,9 +194,9 @@ class MainWindow(tb.Window):
 
         # Status bar
         self.status_var = tk.StringVar(value="Ready")
-        status = tb.Frame(self, padding=6)
+        status = ttk.Frame(self, padding=6)
         status.pack(fill="x")
-        tb.Label(status, textvariable=self.status_var, bootstyle="secondary").pack(side="left")
+        ttk.Label(status, textvariable=self.status_var, foreground="gray").pack(side="left")
 
     # ---- Tool listing & filtering ----
     def _refresh_tools(self):
@@ -308,7 +296,7 @@ class MainWindow(tb.Window):
     def _open_selected_tool(self):
         key = self._selected_key()
         if not key:
-            Messagebox.show_warning(message="Select a tool first.")
+            messagebox.showwarning(message="Select a tool first.")
             return
         # Prefer GUI-selected targets; fall back to CLI targets if none
         targets = self._current_targets() or self.targets_from_cli
@@ -317,7 +305,7 @@ class MainWindow(tb.Window):
     def _focus_selected_tool(self):
         key = self._selected_key()
         if not key:
-            Messagebox.show_warning(message="Select a tool first.")
+            messagebox.showwarning(message="Select a tool first.")
             return
         win = self.open_windows.get(key)
         if win and win.winfo_exists():
@@ -327,12 +315,12 @@ class MainWindow(tb.Window):
             except Exception:
                 pass
         else:
-            Messagebox.show_info(message="That tool window is not open yet.")
+            messagebox.showinfo(message="That tool window is not open yet.")
 
     def _open_tool(self, key: str, targets: List[Path], extra: List[str], give_focus: bool):
         plugin = self.plugins.get(key)
         if not plugin:
-            Messagebox.show_error(message=f"Unknown tool: {key}")
+            messagebox.showerror(message=f"Unknown tool: {key}")
             return
 
         # Enforce single window per tool (since PLUGIN is a singleton with state)
@@ -367,10 +355,12 @@ class MainWindow(tb.Window):
 
     # ---- Misc ----
     def _about(self):
-        Messagebox.show_info(
-            message=f"{APP_NAME} v{VERSION}\nCross-platform right-click toolkit launcher.\n"
-                    f"Python {platform.python_version()} on {platform.system()}",
-            title="About"
+        messagebox.showinfo(
+            title="About",
+            message=(
+                f"{APP_NAME} v{VERSION}\nCross-platform right-click toolkit launcher.\n"
+                f"Python {platform.python_version()} on {platform.system()}"
+            ),
         )
 
 
