@@ -8,6 +8,21 @@ import platform
 try:
     import ttkbootstrap as tb
     from ttkbootstrap.dialogs import Messagebox
+    # Ensure the application icon uses a GIF so it works even when
+    # the underlying Tk build lacks PNG support. Some macOS Python
+    # installations ship with an older Tk version that cannot decode
+    # the default PNG icon bundled with ttkbootstrap, resulting in
+    # a `TclError: couldn't recognize image data`. Replacing the
+    # icon with a 1x1 GIF avoids that issue.
+    try:
+        import ttkbootstrap.window as tb_window
+        tb_window.Icon.icon = (
+            "R0lGODlhAQABAIAAAAAAAP///ywAAAAAAQABAAACAUwAOw=="
+        )
+    except Exception:
+        # If ttkbootstrap internals change or the icon cannot be
+        # patched, fail silently and allow the default behaviour.
+        pass
 except ImportError:
     print("Install deps: pip install ttkbootstrap send2trash pyinstaller")
     sys.exit(1)
