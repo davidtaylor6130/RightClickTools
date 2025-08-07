@@ -6,36 +6,35 @@ from pathlib import Path
 from typing import List, Optional
 
 # GUI
-# ``ttkbootstrap`` is optional so that the plugin can be discovered even when
+# Tkinter is optional so that the plugin can be discovered even when
 # the GUI dependencies are missing (such as in a headless test environment).
 try:
     import tkinter as tk
+    from tkinter import ttk, messagebox
     from tkinter.scrolledtext import ScrolledText  # avoids ttk style issues on some macOS Tk builds
-    import ttkbootstrap as tb
-    from ttkbootstrap.dialogs import Messagebox
     GUI_AVAILABLE = True
 except Exception:  # pragma: no cover - best effort fallback
     tk = None  # type: ignore[assignment]
+    ttk = None  # type: ignore[assignment]
     ScrolledText = None  # type: ignore[assignment]
-    tb = None  # type: ignore[assignment]
 
-    class Messagebox:  # type: ignore[override]
-        """Minimal stub used when ``ttkbootstrap`` is unavailable."""
+    class messagebox:  # type: ignore[override]
+        """Minimal stub used when ``tkinter`` is unavailable."""
 
         @staticmethod
-        def show_error(message: str, title: str | None = None) -> None:
+        def showerror(message: str, title: str | None = None) -> None:
             print(message)
 
         @staticmethod
-        def show_warning(message: str, title: str | None = None) -> None:
+        def showwarning(message: str, title: str | None = None) -> None:
             print(message)
 
         @staticmethod
-        def show_info(message: str, title: str | None = None) -> None:
+        def showinfo(message: str, title: str | None = None) -> None:
             print(message)
 
         @staticmethod
-        def okcancel(message: str, title: str | None = None) -> bool:
+        def askokcancel(message: str, title: str | None = None) -> bool:
             return False
 
     GUI_AVAILABLE = False
@@ -179,22 +178,22 @@ class CleanTool:
     # ---- UI ----
     def make_panel(self, master, context: AppContext):
         if not GUI_AVAILABLE:
-            raise RuntimeError("GUI dependencies (tkinter/ttkbootstrap) are not installed")
+            raise RuntimeError("GUI dependencies (tkinter) are not installed")
 
-        frm = tb.LabelFrame(master, text=self.title)  # correct casing
-        # Tk variables (ttkbootstrap doesn't export *Var reliably across versions)
+        frm = ttk.LabelFrame(master, text=self.title)  # correct casing
+        # Tk variables
         self.xml_path_var = tk.StringVar(value=str((context.resource_dir / "configs" / "settings.clean.xml")))
         self.dry_var = tk.BooleanVar(value=True)
         self.trash_var = tk.BooleanVar(value=(True and HAS_TRASH))
 
-        top = tb.Frame(frm)
+        top = ttk.Frame(frm)
         top.pack(fill="x", padx=8, pady=6)
-        tb.Label(top, text="Settings XML:").pack(side="left")
-        tb.Entry(top, textvariable=self.xml_path_var).pack(side="left", fill="x", expand=True, padx=6)
-        tb.Button(top, text="Browse", command=self._browse, bootstyle="secondary").pack(side="left", padx=3)
-        tb.Button(top, text="Load", command=self._load, bootstyle="primary").pack(side="left", padx=3)
+        ttk.Label(top, text="Settings XML:").pack(side="left")
+        ttk.Entry(top, textvariable=self.xml_path_var).pack(side="left", fill="x", expand=True, padx=6)
+        ttk.Button(top, text="Browse", command=self._browse).pack(side="left", padx=3)
+        ttk.Button(top, text="Load", command=self._load).pack(side="left", padx=3)
 
-        self.rules_list = tb.Treeview(
+        self.rules_list = ttk.Treeview(
             frm,
             columns=("path", "include", "exclude", "recursive", "age", "enabled"),
             show="headings",
@@ -211,17 +210,17 @@ class CleanTool:
         self.log = ScrolledText(frm, height=8, wrap="word")
         self.log.pack(fill="both", expand=True, padx=8, pady=6)
 
-        bottom = tb.Frame(frm)
+        bottom = ttk.Frame(frm)
         bottom.pack(fill="x", padx=8, pady=8)
-        tb.Checkbutton(bottom, text="Dry run (preview only)", variable=self.dry_var).pack(side="left", padx=6)
-        tb.Checkbutton(
+        ttk.Checkbutton(bottom, text="Dry run (preview only)", variable=self.dry_var).pack(side="left", padx=6)
+        ttk.Checkbutton(
             bottom,
             text="Move to Recycle Bin",
             variable=self.trash_var,
             state=("normal" if HAS_TRASH else "disabled"),
         ).pack(side="left", padx=6)
-        tb.Button(bottom, text="Preview", command=self._preview, bootstyle="secondary").pack(side="right", padx=4)
-        tb.Button(bottom, text="Run Clean", command=self._clean, bootstyle="success").pack(side="right", padx=4)
+        ttk.Button(bottom, text="Preview", command=self._preview).pack(side="right", padx=4)
+        ttk.Button(bottom, text="Run Clean", command=self._clean).pack(side="right", padx=4)
 
         self.panel = frm
         return frm
@@ -250,7 +249,7 @@ class CleanTool:
                 self._refresh_rules()
                 self._preview()
         except Exception as e:
-            Messagebox.show_error(message=str(e), title="Cleaner start error")
+            messagebox.showerror(message=str(e), title="Cleaner start error")
 
     def cleanup(self):
         pass
@@ -296,7 +295,7 @@ class CleanTool:
 
     def _preview(self):
         if not self.cfg:
-            Messagebox.show_warning(message="Load a settings XML first.")
+            messagebox.showwarning(message="Load a settings XML first.")
             return
         if not self.preview:
             return
@@ -320,7 +319,7 @@ class CleanTool:
 
     def _clean(self):
         if not self.cfg:
-            Messagebox.show_warning(message="Load a settings XML first.")
+            messagebox.showwarning(message="Load a settings XML first.")
             return
         if self.dry_var:
             self.cfg.dry_run = self.dry_var.get()
@@ -329,9 +328,9 @@ class CleanTool:
 
         if self.cfg.dry_run:
             self._preview()
-            Messagebox.show_info(message="Dry run is ON. Turn it off to delete.")
+            messagebox.showinfo(message="Dry run is ON. Turn it off to delete.")
             return
-        if not Messagebox.okcancel("This will delete items per rules. Continue?", title="Confirm Clean"):
+        if not messagebox.askokcancel("This will delete items per rules. Continue?", title="Confirm Clean"):
             return
 
         to_trash = bool(self.trash_var.get() if self.trash_var else False)
@@ -354,7 +353,7 @@ class CleanTool:
             except Exception as e:
                 if self.log:
                     self.log.insert("end", f"[ERROR] {e}\n{traceback.format_exc()}\n")
-        Messagebox.show_info(message=f"Done. Processed {total} items.", title="Completed")
+        messagebox.showinfo(message=f"Done. Processed {total} items.", title="Completed")
 
     def _delete(self, p: Path, to_trash: bool) -> str:
         try:
