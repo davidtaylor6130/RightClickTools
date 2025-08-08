@@ -1,14 +1,60 @@
+<?xml version="1.0" encoding="utf-8"?>
 <CleanerConfig>
-    <DryRun>true</DryRun>
-    <MoveToRecycleBin>true</MoveToRecycleBin>
-    <Rules>
-        <Rule name="Temp Files" path="C:\Temp">
-            <Include pattern="*.tmp;*.log"/>
-            <Exclude pattern="keepme.log"/>
-            <Recursive>true</Recursive>
-            <DeleteEmptyDirs>true</DeleteEmptyDirs>
-            <MaxAge days="7"/>
-            <Enabled>true</Enabled>
+  <DryRun>true</DryRun>
+  <MoveToRecycleBin>true</MoveToRecycleBin>
+
+  <Profiles default="Generic">
+    <Profile name="UnityProject" detectExe="Unity.exe;Unity Editor.exe">
+      <Rules>
+        <!-- Resolve vs {TARGET} or relative to the selected folder -->
+        <Rule name="Library cache" path="{TARGET}/Library">
+          <Include pattern="**/*"/>
+          <Recursive>true</Recursive>
+          <DeleteEmptyDirs>true</DeleteEmptyDirs>
+          <Enabled>true</Enabled>
         </Rule>
-    </Rules>
+        <Rule name="Logs" path="{TARGET}">
+          <Include pattern="**/*.log;**/*.tmp"/>
+          <Recursive>true</Recursive>
+          <DeleteEmptyDirs>false</DeleteEmptyDirs>
+          <MaxAge days="14"/>
+          <Enabled>true</Enabled>
+        </Rule>
+      </Rules>
+    </Profile>
+
+    <Profile name="UnrealProject" detectExe="UE4Editor.exe;UE5Editor.exe">
+      <Rules>
+        <Rule name="Saved" path="{TARGET}/Saved">
+          <Include pattern="**/*"/>
+          <Recursive>true</Recursive>
+          <DeleteEmptyDirs>true</DeleteEmptyDirs>
+          <Enabled>true</Enabled>
+        </Rule>
+        <Rule name="Intermediate" path="{TARGET}/Intermediate">
+          <Include pattern="**/*"/>
+          <Recursive>true</Recursive>
+          <DeleteEmptyDirs>true</DeleteEmptyDirs>
+          <Enabled>true</Enabled>
+        </Rule>
+      </Rules>
+    </Profile>
+
+    <Profile name="Generic">
+      <Rules>
+        <!-- No detectExe; used if nothing matches or selected manually -->
+        <Rule name="Temp + zips" path="{TARGET}">
+          <Include pattern="**/*.tmp;**/*.bak;**/*.zip"/>
+          <Exclude pattern="**/*.pdf;**/*.docx"/>
+          <Recursive>true</Recursive>
+          <DeleteEmptyDirs>true</DeleteEmptyDirs>
+          <MaxAge days="30"/>
+          <Enabled>true</Enabled>
+        </Rule>
+      </Rules>
+    </Profile>
+  </Profiles>
+
+  <!-- Back-compat: if you keep the old top-level <Rules> (no Profiles),
+       it is treated as a single profile named 'Default'. -->
 </CleanerConfig>
