@@ -3,44 +3,11 @@ import fnmatch, shutil, traceback, xml.etree.ElementTree as ET
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Tuple
 
-# GUI
-# ``ttkbootstrap`` is optional so that the plugin can be discovered even when
-# the GUI dependencies are missing (such as in a headless test environment).
-try:
-    import tkinter as tk
-    from tkinter.scrolledtext import ScrolledText  # avoids ttk style issues on some macOS Tk builds
-    import ttkbootstrap as tb
-    from ttkbootstrap.dialogs import Messagebox
-    GUI_AVAILABLE = True
-except Exception:  # pragma: no cover - best effort fallback
-    tk = None  # type: ignore[assignment]
-    ScrolledText = None  # type: ignore[assignment]
-    tb = None  # type: ignore[assignment]
+import ttkbootstrap as tb
+from ttkbootstrap.dialogs import Messagebox
 
-    class Messagebox:  # type: ignore[override]
-        """Minimal stub used when ``ttkbootstrap`` is unavailable."""
-
-        @staticmethod
-        def show_error(message: str, title: str | None = None) -> None:
-            print(message)
-
-        @staticmethod
-        def show_warning(message: str, title: str | None = None) -> None:
-            print(message)
-
-        @staticmethod
-        def show_info(message: str, title: str | None = None) -> None:
-            print(message)
-
-        @staticmethod
-        def okcancel(message: str, title: str | None = None) -> bool:
-            return False
-
-    GUI_AVAILABLE = False
-
-# Optional trash support
 try:
     from send2trash import send2trash
     HAS_TRASH = True
@@ -49,8 +16,6 @@ except Exception:
 
 from plugins.base import AppContext
 
-
-# ----------------------------- Data -----------------------------
 @dataclass
 class Rule:
     name: str
@@ -62,20 +27,15 @@ class Rule:
     max_age_days: Optional[int] = None
     enabled: bool = True
 
-
 @dataclass
 class Config:
     rules: List[Rule]
     dry_run: bool = True
     move_to_recycle_bin: bool = True
 
-
-# -------------------------- XML parsing -------------------------
 def parse_bool(text: Optional[str], default=False) -> bool:
-    if text is None:
-        return default
-    return str(text).strip().lower() in {"1", "true", "yes", "y", "on"}
-
+    if text is None: return default
+    return str(text).strip().lower() in {"1","true","yes","y","on"}
 
 def parse_config(xml_path: Path) -> Config:
     tree = ET.parse(xml_path)
@@ -85,14 +45,11 @@ def parse_config(xml_path: Path) -> Config:
     dry_run = parse_bool(root.findtext("DryRun"), True)
     move_to_recycle_bin = parse_bool(root.findtext("MoveToRecycleBin"), True)
     rules_el = root.find("Rules")
-    if rules_el is None:
-        raise ValueError("Missing <Rules>")
+    if rules_el is None: raise ValueError("Missing <Rules>")
     rules: List[Rule] = []
     for r in rules_el.findall("Rule"):
         name = r.attrib.get("name") or "Unnamed Rule"
-        p = r.attrib.get("path")
-        if not p:
-            raise ValueError(f"Rule '{name}' missing path")
+        p = r.attrib.get("path");  assert p, f"Rule '{name}' missing path"
         path = Path(p).expanduser()
         inc = (r.find("Include").attrib.get("pattern") if r.find("Include") is not None else "")
         exc = (r.find("Exclude").attrib.get("pattern") if r.find("Exclude") is not None else "")
@@ -104,27 +61,20 @@ def parse_config(xml_path: Path) -> Config:
         mad = None
         mx = r.find("MaxAge")
         if mx is not None:
-            try:
-                mad = int((mx.attrib.get("days") or "").strip())
-            except Exception:
-                pass
+            try: mad = int((mx.attrib.get("days") or "").strip())
+            except Exception: pass
         rules.append(Rule(name, path, include, exclude, recursive, delete_empty_dirs, mad, enabled))
     return Config(rules, dry_run, move_to_recycle_bin)
 
-
-# --------------------------- Helpers ----------------------------
 def _iter_paths(rule: Rule):
     if not rule.path.exists():
         return []
     return rule.path.rglob("*") if rule.recursive else rule.path.glob("*")
 
-
 def _matches_any(p: Path, patterns: List[str]) -> bool:
-    if not patterns:
-        return False
+    if not patterns: return False
     s = str(p)
     return any(fnmatch.fnmatch(s, pat) or fnmatch.fnmatch(p.name, pat) for pat in patterns)
-
 
 def _older_than(p: Path, days: int) -> bool:
     try:
@@ -132,7 +82,6 @@ def _older_than(p: Path, days: int) -> bool:
         return (datetime.now() - m) > timedelta(days=days)
     except Exception:
         return False
-
 
 def collect_deletions(rule: Rule):
     notes: List[str] = []
@@ -158,223 +107,203 @@ def collect_deletions(rule: Rule):
     files_first = sorted(cand, key=lambda p: (p.is_dir(), len(str(p))))
     return files_first, notes
 
-
-# ---------------------------- Plugin ----------------------------
 class CleanTool:
-    key = "clean"  # discovery uses this as the dictionary key
+    key = "clean"
     title = "Cleaner"
     description = "XML-driven cleaner with preview and recycle bin."
 
     def __init__(self):
-        # GUI refs
+        # State/refs
         self.panel = None
         self.cfg: Optional[Config] = None
-        self.xml_path_var: tk.StringVar | None = None
-        self.dry_var: tk.BooleanVar | None = None
-        self.trash_var: tk.BooleanVar | None = None
+        self.xml_path_var = None
+        self.dry_var = None
+        self.trash_var = None
+
+        # Basic section
+        self.basic_frame = None
+        self.status_var = None
+
+        # Pro section
+        self.pro_frame = None
         self.rules_list = None
-        self.preview: ScrolledText | None = None
-        self.log: ScrolledText | None = None
+        self.preview = None
+        self.log = None
 
-    # ---- UI ----
+        self._current_mode = "standard"
+
     def make_panel(self, master, context: AppContext):
-        if not GUI_AVAILABLE:
-            raise RuntimeError("GUI dependencies (tkinter/ttkbootstrap) are not installed")
+        root = tb.Frame(master)
+        self._current_mode = context.ui_mode
 
-        frm = tb.LabelFrame(master, text=self.title)  # correct casing
-        # Tk variables (ttkbootstrap doesn't export *Var reliably across versions)
-        self.xml_path_var = tk.StringVar(value=str((context.resource_dir / "configs" / "settings.clean.xml")))
-        self.dry_var = tk.BooleanVar(value=True)
-        self.trash_var = tk.BooleanVar(value=(True and HAS_TRASH))
+        # --- Header / config ---
+        header = tb.Frame(root); header.pack(fill="x", padx=8, pady=(8,6))
+        self.xml_path_var = tb.StringVar(value=str((context.resource_dir / "configs" / "settings.clean.xml")))
+        tb.Label(header, text="Settings XML:").pack(side="left")
+        tb.Entry(header, textvariable=self.xml_path_var).pack(side="left", fill="x", expand=True, padx=6)
+        tb.Button(header, text="Browse", command=self._browse, bootstyle="secondary").pack(side="left", padx=3)
+        tb.Button(header, text="Load", command=self._load, bootstyle="primary").pack(side="left", padx=3)
 
-        top = tb.Frame(frm)
-        top.pack(fill="x", padx=8, pady=6)
-        tb.Label(top, text="Settings XML:").pack(side="left")
-        tb.Entry(top, textvariable=self.xml_path_var).pack(side="left", fill="x", expand=True, padx=6)
-        tb.Button(top, text="Browse", command=self._browse, bootstyle="secondary").pack(side="left", padx=3)
-        tb.Button(top, text="Load", command=self._load, bootstyle="primary").pack(side="left", padx=3)
+        # --- Basic controls (always visible) ---
+        self.basic_frame = tb.Labelframe(root, text="Basic Controls")
+        self.basic_frame.pack(fill="x", padx=8, pady=(0,8))
+        row = tb.Frame(self.basic_frame); row.pack(fill="x", padx=8, pady=8)
+        self.dry_var = tb.BooleanVar(value=True)
+        self.trash_var = tb.BooleanVar(value=True and HAS_TRASH)
+        tb.Checkbutton(row, text="Dry run", variable=self.dry_var).pack(side="left", padx=6)
+        tb.Checkbutton(row, text="Recycle Bin", variable=self.trash_var, state=("normal" if HAS_TRASH else "disabled")).pack(side="left", padx=6)
+        tb.Button(row, text="Preview", command=self._preview, bootstyle="secondary").pack(side="right", padx=4)
+        tb.Button(row, text="Run Clean", command=self._clean, bootstyle="success").pack(side="right", padx=4)
 
-        self.rules_list = tb.Treeview(
-            frm,
-            columns=("path", "include", "exclude", "recursive", "age", "enabled"),
-            show="headings",
-            height=6,
-        )
-        for col, w in (("path", 260), ("include", 160), ("exclude", 160), ("recursive", 80), ("age", 60), ("enabled", 70)):
-            self.rules_list.heading(col, text=col.capitalize())
-            self.rules_list.column(col, width=w, anchor="w")
+        self.status_var = tb.StringVar(value="No config loaded.")
+        tb.Label(self.basic_frame, textvariable=self.status_var, bootstyle="secondary").pack(anchor="w", padx=8, pady=(0,8))
+
+        # --- Pro section (advanced UI) ---
+        self.pro_frame = tb.Labelframe(root, text="Advanced (Pro)")
+        # Rules table
+        self.rules_list = tb.Treeview(self.pro_frame, columns=("path","include","exclude","recursive","age","enabled"), show="headings", height=6)
+        for col, w in (("path",260),("include",160),("exclude",160),("recursive",80),("age",60),("enabled",70)):
+            self.rules_list.heading(col, text=col.capitalize()); self.rules_list.column(col, width=w, anchor="w")
         self.rules_list.pack(fill="x", padx=8, pady=6)
-
-        # Use Tk's ScrolledText to dodge ttk style issues on some macOS Tk builds
-        self.preview = ScrolledText(frm, height=12, wrap="word")
+        # Preview/Log areas
+        self.preview = tb.ScrolledText(self.pro_frame, height=12)
         self.preview.pack(fill="both", expand=True, padx=8, pady=6)
-        self.log = ScrolledText(frm, height=8, wrap="word")
-        self.log.pack(fill="both", expand=True, padx=8, pady=6)
+        self.log = tb.ScrolledText(self.pro_frame, height=8)
+        self.log.pack(fill="both", expand=True, padx=8, pady=(0,8))
 
-        bottom = tb.Frame(frm)
-        bottom.pack(fill="x", padx=8, pady=8)
-        tb.Checkbutton(bottom, text="Dry run (preview only)", variable=self.dry_var).pack(side="left", padx=6)
-        tb.Checkbutton(
-            bottom,
-            text="Move to Recycle Bin",
-            variable=self.trash_var,
-            state=("normal" if HAS_TRASH else "disabled"),
-        ).pack(side="left", padx=6)
-        tb.Button(bottom, text="Preview", command=self._preview, bootstyle="secondary").pack(side="right", padx=4)
-        tb.Button(bottom, text="Run Clean", command=self._clean, bootstyle="success").pack(side="right", padx=4)
+        # Load defaults
+        self._load(silent=True)
+        # Apply initial mode
+        self._apply_mode(context.ui_mode, first_time=True)
 
-        self.panel = frm
-        return frm
+        self.panel = root
+        return root
 
-    # ---- Lifecycle ----
     def start(self, context: AppContext, targets, argv):
         try:
-            self._load()
             if self.cfg and targets:
                 adhoc = []
                 for t in targets:
-                    adhoc.append(
-                        Rule(
-                            name=f"Ad-hoc: {Path(t).name}",
-                            path=Path(t),
-                            include=["**/*"],
-                            exclude=[],
-                            recursive=True,
-                            delete_empty_dirs=False,
-                            max_age_days=None,
-                            enabled=True,
-                        )
-                    )
+                    adhoc.append(Rule(name=f"Ad-hoc: {Path(t).name}", path=Path(t), include=["**/*"], exclude=[], recursive=True, delete_empty_dirs=False, max_age_days=None, enabled=True))
                 self.cfg.rules = adhoc + self.cfg.rules
                 self.cfg.dry_run = True
                 self._refresh_rules()
-                self._preview()
+                # In standard mode, just update status; in pro, also fill preview
+                if self._current_mode == "pro":
+                    self._preview()
+                else:
+                    self.status_var.set(f"Loaded {len(self.cfg.rules)} rule(s). Ready to preview.")
         except Exception as e:
             Messagebox.show_error(message=str(e), title="Cleaner start error")
 
     def cleanup(self):
         pass
 
-    # ---- Actions ----
+    def on_mode_changed(self, ui_mode: str):
+        self._apply_mode(ui_mode)
+
+    # ---- UI helpers ----
+    def _apply_mode(self, ui_mode: str, first_time: bool=False):
+        self._current_mode = ui_mode
+        if ui_mode == "pro":
+            if first_time:
+                self.pro_frame.pack(fill="both", expand=True, padx=8, pady=(0,8))
+            else:
+                # Only pack if not already visible
+                if not self.pro_frame.winfo_ismapped():
+                    self.pro_frame.pack(fill="both", expand=True, padx=8, pady=(0,8))
+        else:
+            if self.pro_frame.winfo_ismapped():
+                self.pro_frame.pack_forget()
+
     def _browse(self):
         from tkinter import filedialog
-        p = filedialog.askopenfilename(title="Select XML", filetypes=[("XML files", "*.xml"), ("All files", "*.*")])
-        if p and self.xml_path_var is not None:
-            self.xml_path_var.set(p)
+        p = filedialog.askopenfilename(title="Select XML", filetypes=[("XML files","*.xml"),("All files","*.*")])
+        if p: self.xml_path_var.set(p)
 
-    def _load(self):
-        if not self.xml_path_var:
-            return
-        cfg = parse_config(Path(self.xml_path_var.get()))
-        self.cfg = cfg
-        if self.dry_var:
+    def _load(self, silent: bool=False):
+        try:
+            cfg = parse_config(Path(self.xml_path_var.get()))
+            self.cfg = cfg
             self.dry_var.set(cfg.dry_run)
-        if self.trash_var:
             self.trash_var.set(cfg.move_to_recycle_bin and HAS_TRASH)
-        self._refresh_rules()
+            self._refresh_rules()
+            self.status_var.set(f"Loaded {len(cfg.rules)} rule(s).")
+        except Exception as e:
+            if not silent:
+                Messagebox.show_error(message=str(e), title="Load Error")
 
     def _refresh_rules(self):
-        if not self.rules_list:
-            return
+        if not self.rules_list: return
         self.rules_list.delete(*self.rules_list.get_children())
-        if not self.cfg:
-            return
+        if not self.cfg: return
         for i, r in enumerate(self.cfg.rules):
-            self.rules_list.insert(
-                "",
-                "end",
-                iid=str(i),
-                values=(
-                    str(r.path),
-                    ";".join(r.include) or "(all)",
-                    ";".join(r.exclude) or "(none)",
-                    "Yes" if r.recursive else "No",
-                    (str(r.max_age_days) if r.max_age_days is not None else "-"),
-                    "On" if r.enabled else "Off",
-                ),
-            )
+            self.rules_list.insert("", "end", iid=str(i), values=(
+                str(r.path), ";".join(r.include) or "(all)", ";".join(r.exclude) or "(none)",
+                "Yes" if r.recursive else "No", (str(r.max_age_days) if r.max_age_days is not None else "-"),
+                "On" if r.enabled else "Off",
+            ))
 
     def _preview(self):
         if not self.cfg:
-            Messagebox.show_warning(message="Load a settings XML first.")
-            return
-        if not self.preview:
-            return
-        if self.dry_var:
-            self.cfg.dry_run = self.dry_var.get()
-        if self.trash_var:
-            self.cfg.move_to_recycle_bin = self.trash_var.get()
+            Messagebox.show_warning("Load a settings XML first."); return
+        self.cfg.dry_run = self.dry_var.get(); self.cfg.move_to_recycle_bin = self.trash_var.get()
 
-        self.preview.delete("1.0", "end")
+        if self._current_mode == "pro":
+            self.preview.delete("1.0","end")
+
         total = 0
         for r in [x for x in self.cfg.rules if x.enabled]:
             files, notes = collect_deletions(r)
-            for n in notes:
-                self.preview.insert("end", n + "\n")
-            self.preview.insert("end", f"--- {r.name} ({r.path}) ---\n")
-            for p in files:
-                self.preview.insert("end", f"DELETE: {p}\n")
-            self.preview.insert("end", f"({len(files)} items)\n\n")
+            if self._current_mode == "pro":
+                for n in notes: self.preview.insert("end", n+"\n")
+                self.preview.insert("end", f"--- {r.name} ({r.path}) ---\n")
+                for p in files: self.preview.insert("end", f"DELETE: {p}\n")
+                self.preview.insert("end", f"({len(files)} items)\n\n")
             total += len(files)
-        self.preview.insert("end", f"TOTAL: {total} items\n")
+
+        if self._current_mode == "pro":
+            self.preview.insert("end", f"TOTAL: {total} items\n")
+        self.status_var.set(f"Preview: {total} item(s) would be deleted.")
 
     def _clean(self):
         if not self.cfg:
-            Messagebox.show_warning(message="Load a settings XML first.")
-            return
-        if self.dry_var:
-            self.cfg.dry_run = self.dry_var.get()
-        if self.trash_var:
-            self.cfg.move_to_recycle_bin = self.trash_var.get()
-
+            Messagebox.show_warning("Load a settings XML first."); return
+        self.cfg.dry_run = self.dry_var.get(); self.cfg.move_to_recycle_bin = self.trash_var.get()
         if self.cfg.dry_run:
-            self._preview()
-            Messagebox.show_info(message="Dry run is ON. Turn it off to delete.")
-            return
+            self._preview(); Messagebox.show_info("Dry run is ON. Turn it off to delete."); return
         if not Messagebox.okcancel("This will delete items per rules. Continue?", title="Confirm Clean"):
             return
 
-        to_trash = bool(self.trash_var.get() if self.trash_var else False)
+        to_trash = self.trash_var.get()
         total = 0
         for r in [x for x in self.cfg.rules if x.enabled]:
             try:
                 files, notes = collect_deletions(r)
-                if self.log:
-                    for n in notes:
-                        self.log.insert("end", n + "\n")
+                if self._current_mode == "pro":
+                    for n in notes: self.log.insert("end", n+"\n")
                     self.log.insert("end", f"--- {r.name} ---\n")
                 for p in files:
                     msg = self._delete(p, to_trash)
-                    if self.log:
-                        self.log.insert("end", msg + "\n")
-                if self.log:
+                    if self._current_mode == "pro":
+                        self.log.insert("end", msg+"\n")
+                if self._current_mode == "pro":
                     self.log.insert("end", f"({len(files)} items processed)\n\n")
                     self.log.see("end")
                 total += len(files)
             except Exception as e:
-                if self.log:
+                if self._current_mode == "pro":
                     self.log.insert("end", f"[ERROR] {e}\n{traceback.format_exc()}\n")
-        Messagebox.show_info(message=f"Done. Processed {total} items.", title="Completed")
+        Messagebox.show_info(f"Done. Processed {total} items.", title="Completed")
 
     def _delete(self, p: Path, to_trash: bool) -> str:
         try:
             if to_trash and HAS_TRASH:
-                send2trash(str(p))
-                return f"[TRASH] {p}"
+                send2trash(str(p)); return f"[TRASH] {p}"
             if p.is_dir():
-                shutil.rmtree(p, ignore_errors=True)
-                return f"[DEL DIR] {p}"
-            p.unlink(missing_ok=True)
-            return f"[DEL] {p}"
+                shutil.rmtree(p, ignore_errors=True); return f"[DEL DIR] {p}"
+            p.unlink(missing_ok=True); return f"[DEL] {p}"
         except Exception as e:
             return f"[ERROR] {p} -> {e}"
 
-
-# ---- Exports expected by different discovery schemes ----
 PLUGIN = CleanTool()
-
-def get_plugin():
-    """Some discovery functions call get_plugin(); others look for PLUGIN."""
-    return PLUGIN
-
-__all__ = ["PLUGIN", "get_plugin"]

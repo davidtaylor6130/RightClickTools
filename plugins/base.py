@@ -17,9 +17,14 @@ class ToolPlugin(Protocol):
     def cleanup(self) -> None:
         """Called on shutdown."""
 
+    # Optional, but recommended for mode-aware tools
+    def on_mode_changed(self, ui_mode: str) -> None:
+        """Called when the launcher switches between 'standard' and 'pro'."""
+
 @dataclass
 class AppContext:
     app_name: str
     version: str
     platform: str
     resource_dir: Path
+    ui_mode: str = "standard"  # 'standard' or 'pro'
