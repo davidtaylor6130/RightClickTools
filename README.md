@@ -1,10 +1,20 @@
 # RightClickToolkit
 
-RightClickToolkit is a cross‑platform launcher for handy file‑management utilities, designed to be invoked from an operating system's right‑click context menu. It is written in Python with a plugin architecture so new tools can be added with minimal boilerplate.
+<p align="center">
+  <img alt="Status" src="https://img.shields.io/badge/status-pre--alpha-ff9800">
+  <img alt="Privacy" src="https://img.shields.io/badge/privacy-offline--first-2ea44f">
+  <img alt="License" src="https://img.shields.io/badge/license-unlicensed-lightgrey">
+</p>
+
+RightClickToolkit is a cross‑platform launcher for file‑management utilities that integrates with your operating system's right‑click context menu. Built in Python with a plugin architecture, it lets you add new tools with minimal boilerplate.
+
+## Project Status
+
+Pre‑alpha — expect breaking changes and incomplete features while core functionality evolves.
 
 ## Features
 
-- **Plugin‑driven architecture.** Plugins are discovered at runtime from the [`tools/`](tools) folder and loaded even if another plugin fails to import.
+- **Plugin‑driven architecture.** Plugins are discovered at runtime from the [`tools/`](tools) directory and loaded even if another plugin fails to import.
 - **Standard & Pro modes.** The main window can switch between simplified and advanced interfaces depending on user needs.
 - **Cross‑platform integration.** Registry and Automator snippets are provided for Windows and macOS to add context‑menu entries.
 
@@ -31,8 +41,8 @@ RightClickToolkit is a cross‑platform launcher for handy file‑management uti
 
 ## Context‑Menu Integration
 
-- **Windows:** Import the registry snippet and update the path to the executable in [`Reg Files/windows.reg`](Reg%20Files/windows.reg) to add "Clean with RCT" and "Hash with RCT" actions.
-- **macOS:** Use the command in [`Reg Files/MacOs.Automator.txt`](Reg%20Files/MacOs.Automator.txt) inside an Automator "Quick Action" to invoke the toolkit.
+- **Windows:** Import the registry snippet and update the path to the executable in [`Reg Files/windows.reg`](Reg%20Files/windows.reg) to add “Clean with RCT” and “Hash with RCT” actions.
+- **macOS:** Use the command in [`Reg Files/MacOs.Automator.txt`](Reg%20Files/MacOs.Automator.txt) inside an Automator “Quick Action” to invoke the toolkit.
 
 ## Configuration
 
@@ -50,5 +60,5 @@ Create a new file ending with `_tool.py` in the `tools/` directory that exposes 
 
 ## License
 
-No license file was found in the repository. Use at your own discretion.
+No license file has been provided. Use at your own discretion.
 
