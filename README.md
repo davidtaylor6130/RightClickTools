@@ -1,16 +1,16 @@
 # RightClickToolkit
 
 <p align="center">
-  <img alt="Status" src="https://img.shields.io/badge/status-pre--alpha-ff9800">
+  <img alt="Status" src="https://img.shields.io/badge/status-v1-2ea44f">
   <img alt="Privacy" src="https://img.shields.io/badge/privacy-offline--first-2ea44f">
-  <img alt="License" src="https://img.shields.io/badge/license-unlicensed-lightgrey">
+  <img alt="License" src="https://img.shields.io/badge/license-MIT-lightgrey">
 </p>
 
 RightClickToolkit is a cross‑platform launcher for file‑management utilities that integrates with your operating system's right‑click context menu. Built in Python with a plugin architecture, it lets you add new tools with minimal boilerplate.
 
 ## Project Status
 
-Pre‑alpha — expect breaking changes and incomplete features while core functionality evolves.
+v1 — initial stable release. Core features are ready for daily use, though refinements may continue.
 
 ## Features
 
@@ -60,5 +60,5 @@ Create a new file ending with `_tool.py` in the `tools/` directory that exposes 
 
 ## License
 
-No license file has been provided. Use at your own discretion.
+Released under the [MIT License](LICENSE), permitting commercial and private use with minimal restrictions.
 
