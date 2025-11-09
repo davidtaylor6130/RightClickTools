@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import plistlib
 import platform
 import re
@@ -146,7 +147,12 @@ class PyInstallerBuilderTool:
         self._stop.clear()
         self._set_building(True)
         self._append_log(f"Starting build for {script_path} (mode: {mode})")
-        self._worker = threading.Thread(target=self._build_worker, args=(script_path, mode, extra_args), daemon=True)
+        inferred_data = self._infer_additional_data(script_path)
+        self._worker = threading.Thread(
+            target=self._build_worker,
+            args=(script_path, mode, extra_args, inferred_data),
+            daemon=True,
+        )
         self._worker.start()
 
     def _set_building(self, building: bool) -> None:
@@ -172,7 +178,30 @@ class PyInstallerBuilderTool:
         else:
             _write()
 
-    def _build_worker(self, script_path: Path, mode: str, extra_args: List[str]) -> None:
+    def _infer_additional_data(self, script_path: Path) -> List[tuple[Path, str]]:
+        """Infer data directories that should be bundled alongside the script."""
+
+        items: List[tuple[Path, str]] = []
+        project_root = script_path.parent
+
+        # Heuristic: if we're packaging the RightClickToolkit launcher, ensure
+        # dynamic resources like the tools, configuration files, and registry
+        # snippets are available inside the frozen app.
+        if script_path.name == "rightclick_toolkit.py":
+            for rel in ("tools", "config", "Reg Files"):
+                candidate = project_root / rel
+                if candidate.exists():
+                    items.append((candidate, rel))
+
+        return items
+
+    def _build_worker(
+        self,
+        script_path: Path,
+        mode: str,
+        extra_args: List[str],
+        data_items: List[tuple[Path, str]],
+    ) -> None:
         work_dir: Optional[Path] = None
         version_file: Optional[Path] = None
         try:
@@ -222,6 +251,10 @@ class PyInstallerBuilderTool:
                     self._append_log("Version string format not supported for Windows resource; skipping.")
 
             cmd.extend(extra_args)
+            for src, dest in data_items:
+                data_spec = f"{src}{os.pathsep}{dest}"
+                cmd.extend(["--add-data", data_spec])
+                self._append_log(f"Bundling data: {src} -> {dest}")
             cmd.append(str(script_path))
 
             self._append_log("Running: " + " ".join(shlex.quote(part) for part in cmd))
