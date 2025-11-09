@@ -385,3 +385,9 @@ class IntervalCopyTool:
             pass
 
 PLUGIN = IntervalCopyTool()
+
+
+if __name__ == "__main__":
+    from plugins.base import run_plugin_standalone
+
+    run_plugin_standalone(PLUGIN)

@@ -568,3 +568,9 @@ class XmlCheckerTool:
         self._set_summary("Cleared.")
 
 PLUGIN = XmlCheckerTool()
+
+
+if __name__ == "__main__":
+    from plugins.base import run_plugin_standalone
+
+    run_plugin_standalone(PLUGIN)
