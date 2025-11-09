@@ -1,10 +1,21 @@
 from __future__ import annotations
 import sys, os
+import warnings
 from pathlib import Path
 from typing import List, Dict, Optional
 import platform
 import tkinter as tk
 from tkinter.scrolledtext import ScrolledText as TkScrolledText
+
+# Suppress the pkg_resources deprecation UserWarning emitted by PyCharm's debugger
+# helpers so it doesn't reach the toolkit launcher or any tools. This must execute
+# as early as possible to catch the warning before the debugger imports
+# pkg_resources.
+warnings.filterwarnings(
+    "ignore",
+    message=r"pkg_resources is deprecated as an API\..*",
+    category=UserWarning,
+)
 
 # GUI
 try:
