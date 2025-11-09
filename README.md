@@ -25,6 +25,7 @@ v1 — initial stable release. Core features are ready for daily use, though ref
 | Auto File Organiser | Groups files into folders named by a detected factor using `%DONTCARE%` and `%FACTOR%` tokens |
 | Cleaner | Profile‑based cleaner with XML rules and optional recycle‑bin support |
 | Interval Copy (3 files) | Copies three files to a destination with configurable delay and presets |
+| Mirror Verifier | Confirms that source directories are fully mirrored with selectable size, timestamp, or hash checks, plus an option to ignore folder structure when comparing |
 | Weekly Dates (UK) | Generates weekly or daily date lists annotated with UK bank holidays |
 | XML Checker | Watches files or folders for XML changes and reports parse or XSD errors |
 
