@@ -7,7 +7,7 @@ import threading
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, TextIO, Tuple
 
 import ttkbootstrap as tb
 from ttkbootstrap.dialogs import Messagebox
@@ -22,6 +22,37 @@ _STATUS_TAGS = {
     "SOURCE": "secondary",
 }
 
+
+class _HashLogWriter:
+    """Persist mirror file hashes to a custom log file."""
+
+    def __init__(self, root: Path):
+        self.root = root
+        self.path = root / "mirror_hashes.rcthash"
+        self._lock = threading.Lock()
+        self._handle: Optional[TextIO] = None
+        try:
+            self._handle = self.path.open("w", encoding="utf-8")
+        except OSError:
+            self._handle = None
+
+    @property
+    def available(self) -> bool:
+        return self._handle is not None
+
+    def log(self, relative_path: str, digest: str) -> None:
+        if not self._handle:
+            return
+        with self._lock:
+            self._handle.write(f"{relative_path}|{digest}\n")
+            self._handle.flush()
+
+    def close(self) -> None:
+        if self._handle:
+            try:
+                self._handle.close()
+            finally:
+                self._handle = None
 
 
 def _hash_file(path: Path) -> str:
@@ -116,6 +147,7 @@ class MirrorVerifierTool:
 
         self._worker: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
+        self._hash_logs: Dict[Path, Optional[_HashLogWriter]] = {}
 
     # ------------------------------------------------------------------ UI --
     def make_panel(self, master, context: AppContext):
@@ -282,6 +314,93 @@ class MirrorVerifierTool:
             except OSError:
                 continue
 
+    def _estimate_total_files(self, sources: List[str], follow_symlinks: bool) -> int:
+        total = 0
+        for src_str in sources:
+            src_root = Path(src_str)
+            if not src_root.is_dir():
+                continue
+            stack = [src_root]
+            root_str = str(src_root)
+            while stack:
+                if self._stop_event.is_set():
+                    return total
+                current = stack.pop()
+                try:
+                    with os.scandir(current) as it:
+                        for entry in it:
+                            if self._stop_event.is_set():
+                                return total
+                            try:
+                                if entry.is_symlink() and not follow_symlinks:
+                                    continue
+                                if entry.is_dir(follow_symlinks=follow_symlinks):
+                                    stack.append(Path(entry.path))
+                                elif entry.is_file(follow_symlinks=follow_symlinks):
+                                    rel_key = os.path.relpath(entry.path, root_str)
+                                    if rel_key.startswith(".."):
+                                        continue
+                                    total += 1
+                            except OSError:
+                                continue
+                except OSError:
+                    continue
+        return total
+
+    def _get_hash_logger(self, root: Path) -> Optional[_HashLogWriter]:
+        if root in self._hash_logs:
+            return self._hash_logs[root]
+        writer = _HashLogWriter(root)
+        if not writer.available:
+            self._hash_logs[root] = None
+            return None
+        self._hash_logs[root] = writer
+        return writer
+
+    def _record_hash(self, root: Path, file_path: Path, digest: str) -> None:
+        if not digest:
+            return
+        logger = self._get_hash_logger(root)
+        if logger is None:
+            return
+        try:
+            relative = file_path.relative_to(root)
+        except ValueError:
+            relative = file_path
+        logger.log(str(relative), digest)
+
+    def _record_entry_hash(
+        self,
+        resolved_root: Path,
+        entry: Optional[_IndexedFile],
+        precomputed: Optional[str] = None,
+    ) -> Optional[str]:
+        if entry is None:
+            return "Mirror entry metadata unavailable"
+        digest = precomputed if precomputed is not None else entry.ensure_hash()
+        if entry.error:
+            return f"Mirror entry {entry.path} could not be hashed: {entry.error}"
+        if not digest:
+            return "Mirror entry hash could not be determined"
+        self._record_hash(resolved_root, Path(entry.path), digest)
+        return None
+
+    def _close_hash_logs(self) -> None:
+        for writer in self._hash_logs.values():
+            if writer:
+                writer.close()
+        self._hash_logs.clear()
+
+    def _ready_message(self, expected: int) -> str:
+        if expected:
+            return f"Preparing scan – 0/{expected} files queued"
+        return "No source files found in selected directories."
+
+    def _format_progress(self, display_path: str, processed: int, expected: int) -> str:
+        if expected <= 0:
+            expected = processed
+        return f"Processing file {display_path} – on file {processed}/{expected}"
+
     def _start_scan(self):
         if self._worker and self._worker.is_alive():
             Messagebox.show_info(
@@ -346,65 +465,82 @@ class MirrorVerifierTool:
             "matched": 0,
             "missing": 0,
             "mismatch": 0,
+            "expected": 0,
         }
+        self._hash_logs = {}
 
-        mirror_roots = [Path(mirror) for mirror in mirrors]
-        resolved_mirrors: Dict[Path, Path] = {
-            mirror_root: self._resolve_path(mirror_root) for mirror_root in mirror_roots
-        }
+        try:
+            mirror_roots = [Path(mirror) for mirror in mirrors]
+            resolved_mirrors: Dict[Path, Path] = {
+                mirror_root: self._resolve_path(mirror_root) for mirror_root in mirror_roots
+            }
 
-        mirror_indexes: Dict[Path, _MirrorIndex] = {}
-        need_index = ignore_structure
-        if need_index:
-            prepared = self._prepare_mirror_indexes(
-                mirror_roots,
-                resolved_mirrors,
-                follow_symlinks,
-                include_signatures=ignore_structure,
-            )
-            if prepared is None:
+            self._set_summary("Counting source files…")
+            summary["expected"] = self._estimate_total_files(sources, follow_symlinks)
+            if self._stop_event.is_set():
                 self._finalise_summary(summary, aborted=True)
                 return
-            mirror_indexes = prepared
 
-        dest_cache: Dict[str, _IndexedFile] = {}
+            self._set_summary(self._ready_message(summary["expected"]))
 
-        for src_str in sources:
-            src_root = Path(src_str)
-            if not src_root.is_dir():
-                self._append_result("SOURCE", src_str, "Source is not a directory – skipped")
-                continue
-
-            for entry in self._iter_files(src_root, follow_symlinks):
-                if self._stop_event.is_set():
-                    self._finalise_summary(summary, aborted=True)
-                    return
-                summary["total"] += 1
-                source = Path(entry.path)
-                rel = entry.rel_key
-                status, detail = self._check_in_mirrors(
-                    source,
-                    rel,
-                    entry.stat,
-                    entry.error,
+            mirror_indexes: Dict[Path, _MirrorIndex] = {}
+            need_index = ignore_structure
+            if need_index:
+                prepared = self._prepare_mirror_indexes(
                     mirror_roots,
                     resolved_mirrors,
-                    verify_mode,
-                    mirror_indexes,
-                    dest_cache,
-                    ignore_structure,
                     follow_symlinks,
+                    include_signatures=ignore_structure,
                 )
-                if status == "OK":
-                    summary["matched"] += 1
-                elif status == "MISSING":
-                    summary["missing"] += 1
-                else:
-                    summary["mismatch"] += 1
-                display_path = f"{src_root.name}/{rel}"
-                self._append_result(status, display_path, detail)
+                if prepared is None:
+                    self._finalise_summary(summary, aborted=True)
+                    return
+                mirror_indexes = prepared
 
-        self._finalise_summary(summary, aborted=False)
+            dest_cache: Dict[str, _IndexedFile] = {}
+
+            for src_str in sources:
+                src_root = Path(src_str)
+                if not src_root.is_dir():
+                    self._append_result("SOURCE", src_str, "Source is not a directory – skipped")
+                    continue
+
+                for entry in self._iter_files(src_root, follow_symlinks):
+                    if self._stop_event.is_set():
+                        self._finalise_summary(summary, aborted=True)
+                        return
+                    summary["total"] += 1
+                    rel = entry.rel_key
+                    display_path = f"{src_root.name}/{rel}"
+                    expected = summary["expected"] or summary["total"]
+                    self._set_summary(
+                        self._format_progress(display_path, summary["total"], expected)
+                    )
+                    source = Path(entry.path)
+                    status, detail = self._check_in_mirrors(
+                        source,
+                        rel,
+                        entry.stat,
+                        entry.error,
+                        mirror_roots,
+                        resolved_mirrors,
+                        verify_mode,
+                        mirror_indexes,
+                        dest_cache,
+                        ignore_structure,
+                        follow_symlinks,
+                    )
+                    if status == "OK":
+                        summary["matched"] += 1
+                    elif status == "MISSING":
+                        summary["missing"] += 1
+                    else:
+                        summary["mismatch"] += 1
+                    self._append_result(status, display_path, detail)
+
+            self._finalise_summary(summary, aborted=False)
+        finally:
+            self._close_hash_logs()
 
     def _check_in_mirrors(
         self,
@@ -463,6 +599,7 @@ class MirrorVerifierTool:
                     src_size,
                     src_mtime,
                     src_hash,
+                    resolved_root,
                 )
                 if result:
                     status, detail, src_hash = result
@@ -479,6 +616,10 @@ class MirrorVerifierTool:
                 dest_mtime = dest_entry.mtime
                 candidate = Path(dest_entry.path)
 
+            target_entry = dest_entry or indexed_entry
+            if target_entry is None:
+                return "MISMATCH", "Mirror entry metadata unavailable"
+
             if candidate.suffix.lower() != src_suffix:
                 return "MISMATCH", f"File extension mismatch against {candidate}"
             if dest_size != src_size:
@@ -486,21 +627,27 @@ class MirrorVerifierTool:
 
             mtimes_match = _mtimes_close(dest_mtime, src_mtime)
             if verify_mode == _VerificationMode.SIZE_ONLY:
+                error = self._record_entry_hash(resolved_root, target_entry)
+                if error:
+                    return "MISMATCH", error
                 return "OK", f"Size match in {candidate}"
             if verify_mode == _VerificationMode.SIZE_AND_MTIME:
                 if mtimes_match:
+                    error = self._record_entry_hash(resolved_root, target_entry)
+                    if error:
+                        return "MISMATCH", error
                     return "OK", f"Size and timestamp match in {candidate}"
                 return "MISMATCH", f"Modified time mismatch against {candidate}"
             if verify_mode == _VerificationMode.ADAPTIVE_HASH and mtimes_match:
+                error = self._record_entry_hash(resolved_root, target_entry)
+                if error:
+                    return "MISMATCH", error
                 return "OK", f"Metadata match in {candidate}"
 
             if verify_mode in (_VerificationMode.ADAPTIVE_HASH, _VerificationMode.FULL_HASH):
                 try:
                     if src_hash is None:
                         src_hash = _hash_file(source)
-                    target_entry = dest_entry or indexed_entry
-                    if target_entry is None:
-                        return "MISMATCH", "Mirror entry metadata unavailable"
                     dest_hash = target_entry.ensure_hash()
                     if target_entry.error:
                         return "MISMATCH", f"Mirror entry {target_entry.path} could not be hashed: {target_entry.error}"
@@ -508,6 +655,9 @@ class MirrorVerifierTool:
                     return "MISMATCH", f"Cannot hash file: {exc}"
                 if dest_hash != src_hash:
                     return "MISMATCH", f"Hash mismatch against {candidate}"
+                error = self._record_entry_hash(resolved_root, target_entry, dest_hash)
+                if error:
+                    return "MISMATCH", error
                 return "OK", f"Hash verified in {candidate}"
 
         return "MISSING", "No mirror file found"
@@ -521,6 +671,7 @@ class MirrorVerifierTool:
         src_size: int,
         src_mtime: float,
         src_hash: Optional[str],
+        resolved_root: Path,
     ) -> Optional[Tuple[str, str, Optional[str]]]:
         last_error: Optional[str] = None
         for entry in candidates:
@@ -534,12 +685,24 @@ class MirrorVerifierTool:
                 continue
             mtimes_match = _mtimes_close(entry.mtime, src_mtime)
             if verify_mode == _VerificationMode.SIZE_ONLY:
+                error = self._record_entry_hash(resolved_root, entry)
+                if error:
+                    last_error = error
+                    continue
                 return "OK", f"Size match in {candidate}", src_hash
             if verify_mode == _VerificationMode.SIZE_AND_MTIME:
                 if mtimes_match:
+                    error = self._record_entry_hash(resolved_root, entry)
+                    if error:
+                        last_error = error
+                        continue
                     return "OK", f"Size and timestamp match in {candidate}", src_hash
                 continue
             if verify_mode == _VerificationMode.ADAPTIVE_HASH and mtimes_match:
+                error = self._record_entry_hash(resolved_root, entry)
+                if error:
+                    last_error = error
+                    continue
                 return "OK", f"Metadata match in {candidate}", src_hash
             if verify_mode in (_VerificationMode.ADAPTIVE_HASH, _VerificationMode.FULL_HASH):
                 try:
@@ -553,6 +716,10 @@ class MirrorVerifierTool:
                     last_error = f"Cannot hash file: {exc}"
                     continue
                 if dest_hash != src_hash:
+                    continue
+                error = self._record_entry_hash(resolved_root, entry, dest_hash)
+                if error:
+                    last_error = error
                     continue
                 return "OK", f"Hash verified in {candidate}", src_hash
         if last_error:
@@ -573,14 +740,16 @@ class MirrorVerifierTool:
             return
 
         def _update():
+            expected = summary.get("expected") or summary["total"]
             if aborted:
                 self.summary_var.set(
-                    f"Aborted – {summary['matched']} matched, {summary['missing']} missing, {summary['mismatch']} mismatches"
+                    f"Aborted – processed {summary['total']}/{expected} files "
+                    f"({summary['matched']} matched, {summary['missing']} missing, {summary['mismatch']} mismatches)"
                 )
             else:
                 self.summary_var.set(
-                    f"Completed – {summary['matched']} matched of {summary['total']} files"
-                    f" ({summary['missing']} missing, {summary['mismatch']} mismatches)"
+                    f"Completed – processed {summary['total']} of {expected} files "
+                    f"({summary['matched']} matched, {summary['missing']} missing, {summary['mismatch']} mismatches)"
                 )
             self.scan_button.configure(state="normal")
             self.cancel_button.configure(state="disabled")
