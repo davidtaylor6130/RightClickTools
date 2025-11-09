@@ -4,10 +4,17 @@ import hashlib
 import os
 import stat
 import threading
+import warnings
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
+
+warnings.filterwarnings(
+    "ignore",
+    message="pkg_resources is deprecated as an API.",
+    category=UserWarning,
+)
 
 import ttkbootstrap as tb
 from ttkbootstrap.dialogs import Messagebox
