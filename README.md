@@ -41,8 +41,15 @@ v1 — initial stable release. Core features are ready for daily use, though ref
 
 ## Context‑Menu Integration
 
-- **Windows:** Import the registry snippet and update the path to the executable in [`Reg Files/windows.reg`](Reg%20Files/windows.reg) to add “Clean with RCT” and “Hash with RCT” actions.
-- **macOS:** Use the command in [`Reg Files/MacOs.Automator.txt`](Reg%20Files/MacOs.Automator.txt) inside an Automator “Quick Action” to invoke the toolkit.
+RightClickToolkit ships with an automated installer that creates context-menu entries for every built-in tool on Windows, macOS and Linux.
+
+```bash
+python install_context_menus.py
+```
+
+- **Windows:** The installer registers a `RightClickToolkit` submenu for files and folders under the current user’s registry hive. Restart Explorer if the new entries do not appear immediately.
+- **macOS:** Finder Quick Actions are generated in `~/Library/Services`. Enable the “RightClickToolkit – …” actions from **System Settings ▸ Privacy & Security ▸ Extensions** if macOS prompts for approval.
+- **Linux:** `.desktop` action files are written to `~/.local/share/file-manager/actions`, which is supported by Nautilus, Nemo and other FreeDesktop-compliant file managers. Restart your file manager if the actions are not listed straight away.
 
 ## Configuration
 
