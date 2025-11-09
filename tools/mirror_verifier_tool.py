@@ -23,6 +23,10 @@ _STATUS_TAGS = {
 }
 
 
+class _ScanInterrupted(Exception):
+    """Internal signal raised to cancel or pause a scan."""
+
+
 class _HashLogWriter:
     """Persist mirror file hashes to a custom log file."""
 
@@ -144,9 +148,14 @@ class MirrorVerifierTool:
         self.results_tv = None
         self.scan_button = None
         self.cancel_button = None
+        self.pause_button = None
 
         self._worker: Optional[threading.Thread] = None
         self._stop_event = threading.Event()
+        self._pause_event = threading.Event()
+        self._pause_event.set()
+        self._paused = False
+        self._last_summary_message = "Ready."
         self._hash_logs: Dict[Path, Optional[_HashLogWriter]] = {}
 
     # ------------------------------------------------------------------ UI --
@@ -212,6 +221,9 @@ class MirrorVerifierTool:
         self.scan_button = tb.Button(actions, text="Scan mirrors", bootstyle="success",
                                      command=self._start_scan)
         self.scan_button.pack(side="left")
+        self.pause_button = tb.Button(actions, text="Pause", bootstyle="secondary",
+                                      command=self._toggle_pause, state="disabled")
+        self.pause_button.pack(side="left", padx=(6, 0))
         self.cancel_button = tb.Button(actions, text="Cancel", bootstyle="warning",
                                        command=self._cancel_scan, state="disabled")
         self.cancel_button.pack(side="left", padx=(6, 0))
@@ -285,12 +297,16 @@ class MirrorVerifierTool:
         stack = [root]
         root_str = str(root)
         while stack:
+            if not self._wait_for_resume():
+                return
             current = stack.pop()
             if self._stop_event.is_set():
                 return
             try:
                 with os.scandir(current) as it:
                     for entry in it:
+                        if not self._wait_for_resume():
+                            return
                         if self._stop_event.is_set():
                             return
                         try:
@@ -317,18 +333,24 @@ class MirrorVerifierTool:
     def _estimate_total_files(self, sources: List[str], follow_symlinks: bool) -> int:
         total = 0
         for src_str in sources:
+            if not self._wait_for_resume():
+                return total
             src_root = Path(src_str)
             if not src_root.is_dir():
                 continue
             stack = [src_root]
             root_str = str(src_root)
             while stack:
+                if not self._wait_for_resume():
+                    return total
                 if self._stop_event.is_set():
                     return total
                 current = stack.pop()
                 try:
                     with os.scandir(current) as it:
                         for entry in it:
+                            if not self._wait_for_resume():
+                                return total
                             if self._stop_event.is_set():
                                 return total
                             try:
@@ -428,10 +450,14 @@ class MirrorVerifierTool:
             return
 
         self.results_tv.delete(*self.results_tv.get_children())
-        self.summary_var.set("Scanning…")
+        self._set_summary("Scanning…")
         self.scan_button.configure(state="disabled")
+        if self.pause_button:
+            self.pause_button.configure(state="normal", text="Pause", bootstyle="secondary")
         self.cancel_button.configure(state="normal")
         self._stop_event.clear()
+        self._pause_event.set()
+        self._paused = False
 
         verify_mode = self._selected_mode()
         follow_symlinks = bool(self.follow_symlinks_var.get() if self.follow_symlinks_var else False)
@@ -447,10 +473,30 @@ class MirrorVerifierTool:
     def _cancel_scan(self, wait: bool = False):
         if self._worker and self._worker.is_alive():
             self._stop_event.set()
+            self._pause_event.set()
+            self._paused = False
             if wait:
                 self._worker.join(timeout=5)
         self.scan_button.configure(state="normal")
         self.cancel_button.configure(state="disabled")
+        if self.pause_button:
+            self.pause_button.configure(state="disabled", text="Pause", bootstyle="secondary")
+
+    def _toggle_pause(self):
+        if not self._worker or not self._worker.is_alive():
+            return
+        if not self._paused:
+            self._paused = True
+            self._pause_event.clear()
+            if self.pause_button:
+                self.pause_button.configure(text="Resume", bootstyle="info")
+            self._show_paused_summary()
+        else:
+            self._paused = False
+            self._pause_event.set()
+            if self.pause_button:
+                self.pause_button.configure(text="Pause", bootstyle="secondary")
+            self._set_summary(self._last_summary_message)
 
     def _scan_worker(
         self,
@@ -500,6 +546,9 @@ class MirrorVerifierTool:
             dest_cache: Dict[str, _IndexedFile] = {}
 
             for src_str in sources:
+                if not self._wait_for_resume():
+                    self._finalise_summary(summary, aborted=True)
+                    return
                 src_root = Path(src_str)
                 if not src_root.is_dir():
                     self._append_result("SOURCE", src_str, "Source is not a directory – skipped")
@@ -507,6 +556,9 @@ class MirrorVerifierTool:
 
                 for entry in self._iter_files(src_root, follow_symlinks):
                     if self._stop_event.is_set():
+                        self._finalise_summary(summary, aborted=True)
+                        return
+                    if not self._wait_for_resume():
                         self._finalise_summary(summary, aborted=True)
                         return
                     summary["total"] += 1
@@ -517,19 +569,23 @@ class MirrorVerifierTool:
                         self._format_progress(display_path, summary["total"], expected)
                     )
                     source = Path(entry.path)
-                    status, detail = self._check_in_mirrors(
-                        source,
-                        rel,
-                        entry.stat,
-                        entry.error,
-                        mirror_roots,
-                        resolved_mirrors,
-                        verify_mode,
-                        mirror_indexes,
-                        dest_cache,
-                        ignore_structure,
-                        follow_symlinks,
-                    )
+                    try:
+                        status, detail = self._check_in_mirrors(
+                            source,
+                            rel,
+                            entry.stat,
+                            entry.error,
+                            mirror_roots,
+                            resolved_mirrors,
+                            verify_mode,
+                            mirror_indexes,
+                            dest_cache,
+                            ignore_structure,
+                            follow_symlinks,
+                        )
+                    except _ScanInterrupted:
+                        self._finalise_summary(summary, aborted=True)
+                        return
                     if status == "OK":
                         summary["matched"] += 1
                     elif status == "MISSING":
@@ -570,6 +626,10 @@ class MirrorVerifierTool:
         src_hash: Optional[str] = None
         rel_path = Path(rel_key)
         for mirror_root in mirror_roots:
+            if not self._wait_for_resume():
+                raise _ScanInterrupted()
+            if self._stop_event.is_set():
+                raise _ScanInterrupted()
             resolved_root = resolved_mirrors.get(mirror_root, mirror_root)
             index = mirror_indexes.get(resolved_root)
             indexed_entry: Optional[_IndexedFile] = None
@@ -626,6 +686,8 @@ class MirrorVerifierTool:
                 return "MISMATCH", f"Size mismatch against {candidate}"
 
             mtimes_match = _mtimes_close(dest_mtime, src_mtime)
+            if not self._wait_for_resume():
+                raise _ScanInterrupted()
             if verify_mode == _VerificationMode.SIZE_ONLY:
                 error = self._record_entry_hash(resolved_root, target_entry)
                 if error:
@@ -646,8 +708,12 @@ class MirrorVerifierTool:
 
             if verify_mode in (_VerificationMode.ADAPTIVE_HASH, _VerificationMode.FULL_HASH):
                 try:
+                    if not self._wait_for_resume():
+                        raise _ScanInterrupted()
                     if src_hash is None:
                         src_hash = _hash_file(source)
+                    if not self._wait_for_resume():
+                        raise _ScanInterrupted()
                     dest_hash = target_entry.ensure_hash()
                     if target_entry.error:
                         return "MISMATCH", f"Mirror entry {target_entry.path} could not be hashed: {target_entry.error}"
@@ -675,6 +741,10 @@ class MirrorVerifierTool:
     ) -> Optional[Tuple[str, str, Optional[str]]]:
         last_error: Optional[str] = None
         for entry in candidates:
+            if not self._wait_for_resume():
+                raise _ScanInterrupted()
+            if self._stop_event.is_set():
+                raise _ScanInterrupted()
             if entry.error:
                 last_error = f"Mirror entry {entry.path} could not be read: {entry.error}"
                 continue
@@ -706,8 +776,12 @@ class MirrorVerifierTool:
                 return "OK", f"Metadata match in {candidate}", src_hash
             if verify_mode in (_VerificationMode.ADAPTIVE_HASH, _VerificationMode.FULL_HASH):
                 try:
+                    if not self._wait_for_resume():
+                        raise _ScanInterrupted()
                     if src_hash is None:
                         src_hash = _hash_file(source)
+                    if not self._wait_for_resume():
+                        raise _ScanInterrupted()
                     dest_hash = entry.ensure_hash()
                     if entry.error:
                         last_error = f"Mirror entry {entry.path} could not be hashed: {entry.error}"
@@ -742,17 +816,23 @@ class MirrorVerifierTool:
         def _update():
             expected = summary.get("expected") or summary["total"]
             if aborted:
-                self.summary_var.set(
+                message = (
                     f"Aborted – processed {summary['total']}/{expected} files "
                     f"({summary['matched']} matched, {summary['missing']} missing, {summary['mismatch']} mismatches)"
                 )
             else:
-                self.summary_var.set(
+                message = (
                     f"Completed – processed {summary['total']} of {expected} files "
                     f"({summary['matched']} matched, {summary['missing']} missing, {summary['mismatch']} mismatches)"
                 )
+            self._last_summary_message = message
+            self.summary_var.set(message)
             self.scan_button.configure(state="normal")
             self.cancel_button.configure(state="disabled")
+            if self.pause_button:
+                self.pause_button.configure(state="disabled", text="Pause", bootstyle="secondary")
+            self._paused = False
+            self._pause_event.set()
 
         widget = self.results_tv or self.scan_button
         if widget:
@@ -818,6 +898,8 @@ class MirrorVerifierTool:
         indexes: Dict[Path, _MirrorIndex] = {}
         total = len(mirror_roots)
         for idx, mirror_root in enumerate(mirror_roots, start=1):
+            if not self._wait_for_resume():
+                return None
             if self._stop_event.is_set():
                 return None
             self._set_summary(f"Indexing mirror {idx}/{total}: {mirror_root}")
@@ -827,11 +909,15 @@ class MirrorVerifierTool:
                 root_str = str(mirror_root)
                 while stack:
                     current = stack.pop()
+                    if not self._wait_for_resume():
+                        return None
                     if self._stop_event.is_set():
                         return None
                     try:
                         with os.scandir(current) as it:
                             for entry in it:
+                                if not self._wait_for_resume():
+                                    return None
                                 if self._stop_event.is_set():
                                     return None
                                 try:
@@ -877,6 +963,7 @@ class MirrorVerifierTool:
     def _set_summary(self, message: str):
         if not self.summary_var:
             return
+        self._last_summary_message = message
 
         def _update():
             self.summary_var.set(message)
@@ -884,6 +971,27 @@ class MirrorVerifierTool:
         widget = self.results_tv or self.scan_button
         if widget:
             widget.after(0, _update)
+
+    def _show_paused_summary(self):
+        if not self.summary_var:
+            return
+
+        def _update():
+            self.summary_var.set(f"Paused – {self._last_summary_message}")
+
+        widget = self.results_tv or self.scan_button
+        if widget:
+            widget.after(0, _update)
+
+    def _wait_for_resume(self) -> bool:
+        if self._stop_event.is_set():
+            return False
+        if self._pause_event.is_set():
+            return True
+        while not self._pause_event.wait(0.1):
+            if self._stop_event.is_set():
+                return False
+        return not self._stop_event.is_set()
 
 
 PLUGIN = MirrorVerifierTool()
