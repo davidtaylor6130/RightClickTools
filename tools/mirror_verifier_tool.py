@@ -199,9 +199,16 @@ class MirrorVerifierTool:
         self.results_tv.column("detail", anchor="w")
         self.results_tv.pack(fill="both", expand=True)
 
+        style_manager = tb.Style()
         for status, style in _STATUS_TAGS.items():
-            if style:
+            if not style:
+                continue
+            try:
                 self.results_tv.tag_configure(status, bootstyle=style)
+            except tk.TclError:
+                color = getattr(getattr(style_manager, "colors", None), style, None)
+                if color:
+                    self.results_tv.tag_configure(status, foreground=color)
 
         return root
 
