@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import stat
 import threading
@@ -36,7 +37,7 @@ class _HashLogWriter:
         self._lock = threading.Lock()
         self._handle: Optional[TextIO] = None
         try:
-            self._handle = self.path.open("w", encoding="utf-8")
+            self._handle = self.path.open("a", encoding="utf-8")
         except OSError:
             self._handle = None
 
@@ -57,6 +58,104 @@ class _HashLogWriter:
                 self._handle.close()
             finally:
                 self._handle = None
+
+
+class _ProgressLog:
+    """Track per-source progress so scans can resume after closing the app."""
+
+    def __init__(self, root: Path):
+        self.root = root
+        self.path = root / "mirror_verifier_progress.rctresume"
+        self._lock = threading.Lock()
+        self._handle: Optional[TextIO] = None
+        self._entries: Dict[str, Tuple[str, str]] = {}
+        self._status_counts: Dict[str, int] = {}
+        self._load_existing()
+        self._open_append()
+
+    def _load_existing(self) -> None:
+        try:
+            with self.path.open("r", encoding="utf-8") as handle:
+                for line in handle:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        payload = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    rel = payload.get("rel")
+                    status = payload.get("status")
+                    detail = payload.get("detail", "")
+                    if not rel or not status:
+                        continue
+                    self._entries[rel] = (status, detail)
+        except OSError:
+            return
+        self._recount_statuses()
+
+    def _open_append(self) -> None:
+        try:
+            self._handle = self.path.open("a", encoding="utf-8")
+        except OSError:
+            self._handle = None
+
+    def _recount_statuses(self) -> None:
+        self._status_counts.clear()
+        for status, _ in self._entries.values():
+            self._status_counts[status] = self._status_counts.get(status, 0) + 1
+
+    @property
+    def available(self) -> bool:
+        return self._handle is not None
+
+    @property
+    def total_processed(self) -> int:
+        return len(self._entries)
+
+    @property
+    def status_counts(self) -> Dict[str, int]:
+        return dict(self._status_counts)
+
+    def is_processed(self, rel: str) -> bool:
+        return rel in self._entries
+
+    def iter_entries(self):
+        for rel in sorted(self._entries):
+            status, detail = self._entries[rel]
+            yield rel, status, detail
+
+    def record(self, rel: str, status: str, detail: str) -> None:
+        if not rel:
+            return
+        previous = self._entries.get(rel)
+        if previous:
+            prev_status, _ = previous
+            if prev_status in self._status_counts:
+                self._status_counts[prev_status] -= 1
+                if self._status_counts[prev_status] <= 0:
+                    self._status_counts.pop(prev_status, None)
+        self._entries[rel] = (status, detail)
+        self._status_counts[status] = self._status_counts.get(status, 0) + 1
+        if not self._handle:
+            return
+        payload = {"rel": rel, "status": status, "detail": detail}
+        with self._lock:
+            self._handle.write(json.dumps(payload, ensure_ascii=False) + "\n")
+            self._handle.flush()
+
+    def close(self) -> None:
+        if self._handle:
+            try:
+                self._handle.close()
+            finally:
+                self._handle = None
+
+    def clear_file(self) -> None:
+        try:
+            self.path.unlink()
+        except OSError:
+            return
 
 
 def _hash_file(path: Path) -> str:
@@ -157,6 +256,7 @@ class MirrorVerifierTool:
         self._paused = False
         self._last_summary_message = "Ready."
         self._hash_logs: Dict[Path, Optional[_HashLogWriter]] = {}
+        self._progress_logs: Dict[Path, Optional[_ProgressLog]] = {}
 
     # ------------------------------------------------------------------ UI --
     def make_panel(self, master, context: AppContext):
@@ -413,6 +513,55 @@ class MirrorVerifierTool:
                 writer.close()
         self._hash_logs.clear()
 
+    def _prepare_progress_logs(self, sources: List[str]) -> Dict[Path, Optional[_ProgressLog]]:
+        logs: Dict[Path, Optional[_ProgressLog]] = {}
+        for src in sources:
+            src_root = Path(src)
+            log: Optional[_ProgressLog] = None
+            try:
+                log = _ProgressLog(src_root)
+            except Exception:
+                log = None
+            logs[src_root] = log
+        self._progress_logs = logs
+        return logs
+
+    def _get_progress_log(self, root: Path) -> Optional[_ProgressLog]:
+        return self._progress_logs.get(root)
+
+    def _record_progress(self, root: Path, rel: str, status: str, detail: str) -> None:
+        log = self._get_progress_log(root)
+        if not log:
+            return
+        try:
+            log.record(rel, status, detail)
+        except Exception:
+            return
+
+    def _replay_progress(self, logs: Dict[Path, Optional[_ProgressLog]]) -> Dict[str, int]:
+        summary = {"total": 0, "matched": 0, "missing": 0, "mismatch": 0}
+        for root, log in logs.items():
+            if not log:
+                continue
+            counts = log.status_counts
+            summary["total"] += log.total_processed
+            summary["matched"] += counts.get("OK", 0)
+            summary["missing"] += counts.get("MISSING", 0)
+            summary["mismatch"] += counts.get("MISMATCH", 0)
+            for rel, status, detail in log.iter_entries():
+                display = f"{root.name}/{rel}"
+                self._append_result(status, display, detail)
+        return summary
+
+    def _close_progress_logs(self, clear_completed: bool) -> None:
+        for log in self._progress_logs.values():
+            if not log:
+                continue
+            log.close()
+            if clear_completed:
+                log.clear_file()
+        self._progress_logs.clear()
+
     def _ready_message(self, expected: int) -> str:
         if expected:
             return f"Preparing scan – 0/{expected} files queued"
@@ -422,6 +571,11 @@ class MirrorVerifierTool:
         if expected <= 0:
             expected = processed
         return f"Processing file {display_path} – on file {processed}/{expected}"
+
+    def _resume_message(self, processed: int, expected: int) -> str:
+        if expected > 0:
+            return f"Resuming – processed {processed}/{expected} files so far"
+        return f"Resuming – processed {processed} files so far"
 
     def _start_scan(self):
         if self._worker and self._worker.is_alive():
@@ -513,7 +667,14 @@ class MirrorVerifierTool:
             "mismatch": 0,
             "expected": 0,
         }
+        aborted = False
         self._hash_logs = {}
+        progress_logs = self._prepare_progress_logs(sources)
+        resumed = self._replay_progress(progress_logs)
+        summary["total"] += resumed.get("total", 0)
+        summary["matched"] += resumed.get("matched", 0)
+        summary["missing"] += resumed.get("missing", 0)
+        summary["mismatch"] += resumed.get("mismatch", 0)
 
         try:
             mirror_roots = [Path(mirror) for mirror in mirrors]
@@ -524,10 +685,15 @@ class MirrorVerifierTool:
             self._set_summary("Counting source files…")
             summary["expected"] = self._estimate_total_files(sources, follow_symlinks)
             if self._stop_event.is_set():
+                aborted = True
                 self._finalise_summary(summary, aborted=True)
                 return
 
+            if summary["total"] > summary["expected"]:
+                summary["expected"] = summary["total"]
             self._set_summary(self._ready_message(summary["expected"]))
+            if summary["total"]:
+                self._set_summary(self._resume_message(summary["total"], summary["expected"]))
 
             mirror_indexes: Dict[Path, _MirrorIndex] = {}
             need_index = ignore_structure
@@ -539,6 +705,7 @@ class MirrorVerifierTool:
                     include_signatures=ignore_structure,
                 )
                 if prepared is None:
+                    aborted = True
                     self._finalise_summary(summary, aborted=True)
                     return
                 mirror_indexes = prepared
@@ -547,20 +714,26 @@ class MirrorVerifierTool:
 
             for src_str in sources:
                 if not self._wait_for_resume():
+                    aborted = True
                     self._finalise_summary(summary, aborted=True)
                     return
                 src_root = Path(src_str)
                 if not src_root.is_dir():
                     self._append_result("SOURCE", src_str, "Source is not a directory – skipped")
                     continue
+                progress_log = self._get_progress_log(src_root)
 
                 for entry in self._iter_files(src_root, follow_symlinks):
                     if self._stop_event.is_set():
+                        aborted = True
                         self._finalise_summary(summary, aborted=True)
                         return
                     if not self._wait_for_resume():
+                        aborted = True
                         self._finalise_summary(summary, aborted=True)
                         return
+                    if progress_log and progress_log.is_processed(entry.rel_key):
+                        continue
                     summary["total"] += 1
                     rel = entry.rel_key
                     display_path = f"{src_root.name}/{rel}"
@@ -584,6 +757,7 @@ class MirrorVerifierTool:
                             follow_symlinks,
                         )
                     except _ScanInterrupted:
+                        aborted = True
                         self._finalise_summary(summary, aborted=True)
                         return
                     if status == "OK":
@@ -592,11 +766,13 @@ class MirrorVerifierTool:
                         summary["missing"] += 1
                     else:
                         summary["mismatch"] += 1
+                    self._record_progress(src_root, rel, status, detail)
                     self._append_result(status, display_path, detail)
 
             self._finalise_summary(summary, aborted=False)
         finally:
             self._close_hash_logs()
+            self._close_progress_logs(clear_completed=not aborted)
 
     def _check_in_mirrors(
         self,
