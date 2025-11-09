@@ -28,6 +28,8 @@ v1 — initial stable release. Core features are ready for daily use, though ref
 | Mirror Verifier | Confirms that source directories are fully mirrored with selectable size, timestamp, or hash checks, plus an option to ignore folder structure when comparing |
 | Weekly Dates (UK) | Generates weekly or daily date lists annotated with UK bank holidays |
 | XML Checker | Watches files or folders for XML changes and reports parse or XSD errors |
+| PyInstaller Builder | Packages a selected Python script into an executable or macOS app bundle, cleaning up temporary artefacts |
+| MCP RAG Server Generator | Builds a ready-to-run Model Context Protocol server script that indexes a directory and serves retrieval-augmented answers |
 
 ## Getting Started
 
