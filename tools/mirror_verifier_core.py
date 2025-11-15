@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import stat
@@ -38,14 +39,27 @@ class ManifestEntry:
         return (self.ext.lstrip(".").lower(), self.size)
 
 
+def _cache_dir_for(root: Path, override: Optional[Path]) -> Optional[Path]:
+    if not override:
+        return None
+    root_text = str(root)
+    digest = hashlib.sha1(root_text.encode("utf-8", errors="ignore")).hexdigest()[:12]
+    label = root.name or root.drive or root_text
+    sanitized = [ch if ch.isalnum() else "_" for ch in label]
+    collapsed = "".join(sanitized).strip("_") or "root"
+    collapsed = collapsed[-32:]
+    return override / f"{collapsed}-{digest}"
+
+
 class DirectoryManifest:
     """JSONL manifest describing files under a root directory."""
 
-    def __init__(self, root: Path):
+    def __init__(self, root: Path, cache_dir: Optional[Path] = None):
         self.root = root
         self._lock = threading.Lock()
+        self._cache_override = cache_dir
         self._dir = root / ".rct"
-        self._path = self._dir / "manifest.jsonl"
+        self._path = self._resolve_manifest_path()
         self._handle = None
         self._entries: Dict[str, ManifestEntry] = {}
         self._load_existing()
@@ -56,9 +70,20 @@ class DirectoryManifest:
         return self._path
 
     def _resolve_manifest_path(self) -> Path:
+        if self._cache_override:
+            candidate = _cache_dir_for(self.root, self._cache_override)
+            if candidate:
+                try:
+                    candidate.mkdir(parents=True, exist_ok=True)
+                    self._dir = candidate
+                    return candidate / "manifest.jsonl"
+                except OSError:
+                    pass
+        self._dir = self.root / ".rct"
+        target = self._dir / "manifest.jsonl"
         try:
             self._dir.mkdir(parents=True, exist_ok=True)
-            return self._path
+            return target
         except OSError:
             fallback = self.root / "mirror_hashes.rcthash"
             try:
@@ -68,7 +93,7 @@ class DirectoryManifest:
             return fallback
 
     def _load_existing(self) -> None:
-        manifest_path = self._resolve_manifest_path()
+        manifest_path = self._path
         if manifest_path.exists():
             try:
                 with manifest_path.open("r", encoding="utf-8") as handle:
@@ -91,8 +116,6 @@ class DirectoryManifest:
                         self._entries[rel] = ManifestEntry(rel, int(size), float(mtime), sha256, str(ext), error)
             except OSError:
                 pass
-        self._path = manifest_path
-
     def _open_append(self) -> None:
         try:
             self._handle = self._path.open("a", encoding="utf-8")
@@ -150,13 +173,30 @@ class DirectoryManifest:
 
 
 class IgnoreRules:
-    def __init__(self, root: Path):
+    def __init__(self, root: Path, cache_dir: Optional[Path] = None):
         self.root = root
         self._lock = threading.Lock()
-        self._dir = root / ".rct"
+        self._cache_override = cache_dir
+        self._dir = self._determine_dir()
         self._path = self._dir / "ignore.json"
         self.patterns: List[str] = []
         self._load()
+
+    def _determine_dir(self) -> Path:
+        if self._cache_override:
+            candidate = _cache_dir_for(self.root, self._cache_override)
+            if candidate:
+                try:
+                    candidate.mkdir(parents=True, exist_ok=True)
+                    return candidate
+                except OSError:
+                    pass
+        directory = self.root / ".rct"
+        try:
+            directory.mkdir(parents=True, exist_ok=True)
+            return directory
+        except OSError:
+            return self.root
 
     def _ensure_dir(self) -> None:
         try:
@@ -376,6 +416,7 @@ class MirrorVerifierConfig:
     ignore_structure: bool
     follow_symlinks: bool
     thread_count: Optional[int] = None
+    cache_dir: Optional[Path] = None
 
 
 def _mtimes_close(left: float, right: float, tolerance: float = 2.0) -> bool:
@@ -567,13 +608,14 @@ class MirrorVerifierCore:
         mirrors = [Path(p) for p in self.config.mirrors]
         follow_symlinks = self.config.follow_symlinks
         ignore_structure = self.config.ignore_structure
+        cache_dir = self.config.cache_dir
 
         if not sources or not mirrors:
             return
 
         progress_logs = {root: ProgressLog(root) for root in sources}
-        manifests = {root: DirectoryManifest(root) for root in sources + mirrors}
-        ignore_rules = {root: IgnoreRules(root) for root in sources}
+        manifests = {root: DirectoryManifest(root, cache_dir) for root in sources + mirrors}
+        ignore_rules = {root: IgnoreRules(root, cache_dir) for root in sources}
         catalogs = {}
         for mirror in mirrors:
             catalogs[mirror] = MirrorCatalog(
@@ -589,7 +631,9 @@ class MirrorVerifierCore:
         expected = 0
         for src_root in sources:
             expected += sum(1 for _ in self._iter_source_files(src_root, follow_symlinks))
-        self.status_callback(f"Preparing – queued {expected} files")
+        prep_message = f"Preparing – queued {expected} files"
+        self.status_callback(prep_message)
+        self.progress_callback(prep_message)
 
         for src_root in sources:
             if self.stop_event.is_set():
@@ -605,6 +649,8 @@ class MirrorVerifierCore:
                 rel = entry[0]
                 abs_path = entry[1]
                 stat_result = entry[2]
+                display_root = src_root.name or src_root.drive or str(src_root)
+                self.progress_callback(f"Checking {display_root}/{rel}")
                 if ignore.matches(rel):
                     item = VerificationItem("OK", rel, "Ignored", True, src_root)
                     self.result_callback(item)

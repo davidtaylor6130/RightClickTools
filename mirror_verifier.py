@@ -43,6 +43,7 @@ def _build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--ignore-structure", action="store_true", help="Match files by name and size across mirrors")
     parser.add_argument("--follow-symlinks", action="store_true", help="Follow symlinks when scanning")
     parser.add_argument("--threads", type=int, default=None, help="Hashing thread pool size")
+    parser.add_argument("--cache-dir", help="Directory used to store manifests and hash maps")
     parser.add_argument("--out", choices=["JSON", "TEXT"], default="TEXT", help="Output format")
     return parser
 
@@ -75,6 +76,13 @@ def main(argv: Sequence[str] | None = None) -> int:
     def _on_result(item: VerificationItem) -> None:
         results.append(item)
 
+    cache_dir = Path(args.cache_dir).expanduser() if args.cache_dir else None
+    if cache_dir:
+        try:
+            cache_dir.mkdir(parents=True, exist_ok=True)
+        except OSError as exc:
+            raise SystemExit(f"Cannot create cache directory: {exc}") from exc
+
     config = MirrorVerifierConfig(
         sources=sources,
         mirrors=mirrors,
@@ -82,6 +90,7 @@ def main(argv: Sequence[str] | None = None) -> int:
         ignore_structure=args.ignore_structure,
         follow_symlinks=args.follow_symlinks,
         thread_count=args.threads,
+        cache_dir=cache_dir,
     )
     core = MirrorVerifierCore(
         config,

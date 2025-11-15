@@ -126,6 +126,7 @@ class MirrorVerifierTool:
         self.verify_mode_var: Optional[tb.StringVar] = None
         self.follow_symlinks_var: Optional[tb.BooleanVar] = None
         self.ignore_structure_var: Optional[tb.BooleanVar] = None
+        self.cache_dir_var: Optional[tb.StringVar] = None
         self.summary_var: Optional[tb.StringVar] = None
         self.progress_var: Optional[tb.StringVar] = None
         self.banner_var: Optional[tb.StringVar] = None
@@ -192,6 +193,7 @@ class MirrorVerifierTool:
         self.verify_mode_var = tk.StringVar(value=_VERIFY_LABELS[VerificationMode.SIZE_ONLY])
         self.follow_symlinks_var = tk.BooleanVar(value=False)
         self.ignore_structure_var = tk.BooleanVar(value=False)
+        self.cache_dir_var = tk.StringVar(value="")
         tb.Label(options, text="Verification strategy:").pack(anchor="w")
         verify_combo = tb.Combobox(
             options,
@@ -202,6 +204,24 @@ class MirrorVerifierTool:
         verify_combo.pack(anchor="w", pady=(2, 4))
         tb.Checkbutton(options, text="Follow symbolic links", variable=self.follow_symlinks_var).pack(anchor="w", pady=(2, 0))
         tb.Checkbutton(options, text="Ignore folder structure (match by file name & size)", variable=self.ignore_structure_var).pack(anchor="w", pady=(2, 0))
+        cache_label = tb.Label(options, text="Metadata cache folder:")
+        cache_label.pack(anchor="w", pady=(6, 0))
+        cache_row = tb.Frame(options)
+        cache_row.pack(fill="x", pady=(2, 0))
+        cache_entry = tb.Entry(cache_row, textvariable=self.cache_dir_var)
+        cache_entry.pack(side="left", fill="x", expand=True)
+        tb.Button(
+            cache_row,
+            text="Browse…",
+            bootstyle="secondary",
+            command=lambda: self._choose_cache_dir(filedialog.askdirectory),
+        ).pack(side="left", padx=(6, 0))
+        tb.Button(
+            cache_row,
+            text="Use default",
+            bootstyle="link",
+            command=lambda: self.cache_dir_var.set(""),
+        ).pack(side="left", padx=(6, 0))
 
         actions = tb.Frame(root)
         actions.pack(fill="x", padx=8, pady=(0, 6))
@@ -321,6 +341,11 @@ class MirrorVerifierTool:
     def _clear_list(self, listbox):
         listbox.delete(0, "end")
 
+    def _choose_cache_dir(self, chooser):
+        path = chooser()
+        if path:
+            self.cache_dir_var.set(path)
+
     # -------------------------------------------------------------- Scanning --
     def _start_scan(self):
         if self._worker and self._worker.is_alive():
@@ -357,7 +382,7 @@ class MirrorVerifierTool:
             if self.performance_button:
                 self.performance_button.configure(text="Performance ▸")
         self._set_summary("Scanning…")
-        self._set_progress("Preparing")
+        self._set_progress("Initializing scan…")
         self.banner_var.set("")
         self.scan_button.configure(state="disabled")
         self.cancel_button.configure(state="normal")
@@ -368,6 +393,14 @@ class MirrorVerifierTool:
         verify_mode = self._selected_mode()
         follow_symlinks = bool(self.follow_symlinks_var.get() if self.follow_symlinks_var else False)
         ignore_structure = bool(self.ignore_structure_var.get() if self.ignore_structure_var else False)
+        cache_dir_value = self.cache_dir_var.get().strip() if self.cache_dir_var else ""
+        cache_dir = Path(cache_dir_value).expanduser() if cache_dir_value else None
+        if cache_dir:
+            try:
+                cache_dir.mkdir(parents=True, exist_ok=True)
+            except OSError as exc:
+                Messagebox.show_error(title="Mirror Verifier", message=f"Cannot use cache folder: {exc}")
+                return
         config = MirrorVerifierConfig(
             sources=[Path(p) for p in sources],
             mirrors=[Path(p) for p in mirrors],
@@ -375,6 +408,7 @@ class MirrorVerifierTool:
             ignore_structure=ignore_structure,
             follow_symlinks=follow_symlinks,
             thread_count=None,
+            cache_dir=cache_dir,
         )
         self._worker = threading.Thread(
             target=self._run_core,

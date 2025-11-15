@@ -25,21 +25,31 @@ from tools.mirror_verifier_core import (
 )
 
 
+def _is_relative_to(path: Path, other: Path) -> bool:
+    try:
+        path.relative_to(other)
+        return True
+    except ValueError:
+        return False
+
+
 def _write_file(path: Path, data: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_bytes(data)
 
 
 def test_manifest_read_write(tmp_path: Path):
-    manifest = DirectoryManifest(tmp_path)
+    cache_root = tmp_path / "cache"
+    manifest = DirectoryManifest(tmp_path, cache_root)
     entry = ManifestEntry("foo.txt", 3, 42.0, "abc", ".txt", None)
     manifest.record(entry)
     manifest.close()
 
-    manifest_reloaded = DirectoryManifest(tmp_path)
+    manifest_reloaded = DirectoryManifest(tmp_path, cache_root)
     cached = manifest_reloaded.get("foo.txt")
     assert cached is not None
     assert cached.sha256 == "abc"
+    assert _is_relative_to(manifest_reloaded.path, cache_root)
     manifest_reloaded.close()
 
 
@@ -106,6 +116,8 @@ def test_cli_json_output_schema(tmp_path: Path):
         str(source),
         "--mirror",
         str(mirror),
+        "--cache-dir",
+        str(tmp_path / "cache"),
         "--out",
         "JSON",
     ]
