@@ -452,9 +452,12 @@ class MirrorVerifierTool:
     def _poll_ui_queue(self):
         if self.panel is None:
             return
+        processed = 0
+        max_events = 200
         try:
-            while True:
+            while processed < max_events:
                 event, payload = self._ui_queue.get_nowait()
+                processed += 1
                 if event == "result":
                     self._handle_result(payload)
                 elif event == "progress":
@@ -474,8 +477,14 @@ class MirrorVerifierTool:
                     self._finish_scan(payload)
         except queue.Empty:
             pass
+        needs_reschedule = False
         if self._worker and self._worker.is_alive():
-            self.panel.after(200, self._poll_ui_queue)
+            needs_reschedule = True
+        elif not self._ui_queue.empty():
+            needs_reschedule = True
+        if needs_reschedule:
+            delay = 50 if processed == max_events else 150
+            self.panel.after(delay, self._poll_ui_queue)
 
     def _finish_scan(self, summary: Dict[str, int]):
         message = (
